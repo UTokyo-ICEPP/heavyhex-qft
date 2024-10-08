@@ -1,6 +1,8 @@
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from itertools import count
+from typing import Union
 import numpy as np
+from matplotlib.figure import Figure
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
@@ -9,6 +11,12 @@ from qiskit.quantum_info import SparsePauliOp
 
 class TriangularZ2Lattice:
     r"""Triangular lattice for pure-Z2 gauge theory.
+
+    Hamiltonian of the theory is
+
+    .. math::
+
+        H = -\sum_{e \in \mathcal{E}} Z_e - K \sum_{p \in \mathcal{P}} \prod_{e \in \partial p} X_e.
 
     The constructor takes a string argument representing the structure of the lattice. The string
     should contain only characters '*', ' ', and '\n', with the asterisks representing the locations
@@ -135,6 +143,12 @@ class TriangularZ2Lattice:
     def num_vertices(self) -> int:
         return self.graph.num_nodes()
 
+    def draw_graph(self) -> Figure:
+        return rx.visualization.mpl_draw(self.graph, with_labels=True, labels=str, edge_labels=str)
+
+    def draw_qubit_graph(self) -> Figure:
+        return rx.visualization.mpl_draw(self.qubit_graph, with_labels=True, labels=str)
+
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of node indices in the qubit graph corresponding to the links surrounding
         the plaquette."""
@@ -150,8 +164,21 @@ class TriangularZ2Lattice:
         """
         return list(self.graph.incident_edges(vertex_id))
 
-    def layout_heavy_hex(self, coupling_map: CouplingMap, first_qubit: int) -> list[int]:
-        """Return the physical qubit layout of the qubit graph using qubits in the coupling map."""
+    def layout_heavy_hex(
+        self,
+        coupling_map: CouplingMap,
+        qubit_assignment: Union[int, dict[tuple[str, int], int]]
+    ) -> list[int]:
+        """Return the physical qubit layout of the qubit graph using qubits in the coupling map.
+
+        Args:
+            coupling_map: backend.coupling_map.
+            qubit_assignment: Physical qubit id to assign link 0 to, or an assignment hint dict of
+                form {('link' or 'plaq', id): (physical qubit)}.
+
+        Returns:
+            List of physical qubit ids to be passed to the transpiler.
+        """
         cgraph = coupling_map.graph.to_undirected()
         for idx in cgraph.node_indices():
             if len(cgraph.neighbors(idx)) == 3:
@@ -159,18 +186,34 @@ class TriangularZ2Lattice:
             else:
                 cgraph[idx] = (idx, 'link')
 
+        if isinstance(qubit_assignment, int):
+            qubit_assignment = {('link', 0): qubit_assignment}
+
         def node_matcher(physical_qubit, lattice_qubit):
-            print(physical_qubit, lattice_qubit)
-            if physical_qubit[0] == first_qubit and lattice_qubit == ('link', 0):
+            # True if this is an assigned qubit
+            if qubit_assignment.get(lattice_qubit) == physical_qubit[0]:
                 return True
+            # Otherwise check the qubit type (plaq or link)
             return physical_qubit[1] == lattice_qubit[0]
 
         vf2 = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher, subgraph=True,
                              induced=False)
-        return next(vf2)
+        try:
+            mapping = next(vf2)
+        except StopIteration as exc:
+            raise ValueError('Layout with the given qubit assignment could not be found.') from exc
 
-    def to_pauli(self, link_ops: dict[int, str]) -> str:
-        """Form the Pauli string corresponding to the given link operators."""
+        layout = [None] * self.qubit_graph.num_nodes()
+        for physical_qubit, logical_qubit in mapping.items():
+            layout[logical_qubit] = physical_qubit
+
+        return layout
+
+    def to_pauli(self, link_ops: dict[int, str], pad_plaquettes: bool = False) -> str:
+        """Form the Pauli string corresponding to the given link operators.
+
+        If pad_plaquettes is True, ('I' * num_plaquettes) is appended to the returned string.
+        """
         link_paulis = []
         for link_id, op in link_ops.items():
             link_paulis.append((link_id, op.upper()))
@@ -181,6 +224,8 @@ class TriangularZ2Lattice:
             pauli = op + ('I' * (link - len(pauli))) + pauli
 
         pauli = 'I' * (self.num_links - len(pauli)) + pauli
+        if pad_plaquettes:
+            pauli = 'I' * self.num_plaquettes + pauli
         return pauli
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
@@ -230,11 +275,13 @@ class TriangularZ2Lattice:
         plaquette_links = np.array([list(sorted(self.plaquette_links(plid)))
                                     for plid in range(self.num_plaquettes)])
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        circuit.h(range(self.num_links))
         circuit.cx(plaquette_links[:, 0], qpl)
         circuit.cx(plaquette_links[:, 1], qpl)
         circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.rx(-2. * plaquette_energy * time, qpl)
+        circuit.rz(-2. * plaquette_energy * time, qpl)
         circuit.cx(plaquette_links[:, 2], qpl)
         circuit.cx(plaquette_links[:, 1], qpl)
         circuit.cx(plaquette_links[:, 0], qpl)
+        circuit.h(range(self.num_links))
         return circuit
