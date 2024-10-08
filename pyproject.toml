@@ -14,3 +14,8 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+dependencies = [
+    "numpy",
+    "qiskit>1.0.0",
+    "rustworkx"
+]
