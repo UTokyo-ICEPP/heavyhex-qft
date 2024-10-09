@@ -41,7 +41,7 @@ class PureZ2LGT(ABC):
 
     @property
     def num_plaquettes(self) -> int:
-        return self.dual_graph.num_nodes()
+        return len(self.dual_graph.filter_nodes(lambda d: d is not None))
 
     @property
     def num_links(self) -> int:
