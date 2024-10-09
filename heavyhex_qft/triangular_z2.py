@@ -121,6 +121,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Construct the dual graph
         self.dual_graph.add_nodes_from(range(next(plaq_id_gen)))
         for link_id in self.graph.edge_indices():
+            # pylint: disable-next=cell-var-from-loop
             link_node = list(self.qubit_graph.filter_nodes(lambda d: d == ('link', link_id)))[0]
             plaq_nodes = self.qubit_graph.neighbors(link_node)
             pidx1 = self.qubit_graph[plaq_nodes[0]][1]
