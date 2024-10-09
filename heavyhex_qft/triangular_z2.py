@@ -1,7 +1,5 @@
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from itertools import count
-import rustworkx as rx
-
 from .pure_z2_lgt import PureZ2LGT
 
 
@@ -67,11 +65,10 @@ class TriangularZ2Lattice(PureZ2LGT):
             if any(u == '*' and l == '*' for u, l in zip(upper, lower)):
                 raise ValueError('Lattice rows not staggered')
 
-        # Construct the lattice graph (nodes=vertices, edges=links)
-        graph = rx.PyGraph()
-        graph.add_nodes_from(range(configuration.count('*')))
+        super().__init__(configuration.count('*'))
 
-        node_id_gen = iter(graph.node_indices())
+        # Construct the lattice graph (nodes=vertices, edges=links)
+        node_id_gen = iter(self.graph.node_indices())
         node_ids = []
         for row in config_rows:
             node_ids.append([next(node_id_gen) if char == '*' else None for char in row])
@@ -80,22 +77,21 @@ class TriangularZ2Lattice(PureZ2LGT):
         for upper, lower in zip(node_ids[:-1], node_ids[1:]):
             for ipos, left in enumerate(upper[:-2]):
                 if left is not None and (right := upper[ipos + 2]) is not None:
-                    graph.add_edge(left, right, next(edge_id_gen))
+                    self.graph.add_edge(left, right, next(edge_id_gen))
             for ipos, top in enumerate(upper):
                 if top is None:
                     continue
                 if ipos > 0 and (bottom := lower[ipos - 1]) is not None:
-                    graph.add_edge(top, bottom, next(edge_id_gen))
+                    self.graph.add_edge(top, bottom, next(edge_id_gen))
                 if ipos < len(lower) - 1 and (bottom := lower[ipos + 1]) is not None:
-                    graph.add_edge(top, bottom, next(edge_id_gen))
+                    self.graph.add_edge(top, bottom, next(edge_id_gen))
 
         for ipos, left in enumerate(node_ids[-1][:-2]):
             if left is not None and (right := node_ids[-1][ipos + 2]) is not None:
-                graph.add_edge(left, right, next(edge_id_gen))
+                self.graph.add_edge(left, right, next(edge_id_gen))
 
         # Construct the qubit mapping graph (nodes=links and plaquettes, edges=qubit connectivity)
-        qubit_graph = rx.PyGraph()
-        qubit_graph.add_nodes_from([('link', idx) for idx in graph.edge_indices()])
+        self.qubit_graph.add_nodes_from([('link', idx) for idx in self.graph.edge_indices()])
 
         plaq_id_gen = iter(count())
         for upper, lower in zip(node_ids[:-1], node_ids[1:]):
@@ -113,12 +109,10 @@ class TriangularZ2Lattice(PureZ2LGT):
                 if not endpoints:
                     continue
 
-                plaq_node_id = qubit_graph.add_node(('plaq', next(plaq_id_gen)))
+                plaq_node_id = self.qubit_graph.add_node(('plaq', next(plaq_id_gen)))
                 for n1, n2 in endpoints:
-                    qubit_graph.add_edge(
-                        list(graph.edge_indices_from_endpoints(n1, n2))[0],
+                    self.qubit_graph.add_edge(
+                        list(self.graph.edge_indices_from_endpoints(n1, n2))[0],
                         plaq_node_id,
                         None
                     )
-
-        super().__init__(graph, qubit_graph)

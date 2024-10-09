@@ -1,6 +1,5 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC
-from itertools import count
 from typing import Union
 import numpy as np
 from matplotlib.figure import Figure
@@ -31,11 +30,12 @@ class PureZ2LGT(ABC):
     labeled by 2-tuples with form (type, id) where type is either 'link' or 'plaq' and id is the
     serial number of the link within each type (link id must coincide with the edge ids of the
     physical graph). For a lattice with L links and P plaquettes, the qubit graph should have L+P
-    nodes, with the first L representing the links.    
+    nodes, with the first L representing the links.
     """
-    def __init__(self, graph: rx.PyGraph, qubit_graph: rx.PyGraph):
-        self.graph = graph
-        self.qubit_graph = qubit_graph
+    def __init__(self, num_vertices: int):
+        self.graph = rx.PyGraph()
+        self.graph.add_nodes_from(range(num_vertices))
+        self.qubit_graph = rx.PyGraph()
 
     @property
     def num_plaquettes(self) -> int:
