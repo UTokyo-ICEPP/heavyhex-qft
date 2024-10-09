@@ -154,7 +154,7 @@ class PureZ2LGT(ABC):
         """
         link_terms = [self.to_pauli({lid: 'Z'}) for lid in self.graph.edge_indices()]
         plaquette_terms = [self.to_pauli({lid: 'X' for lid in self.plaquette_links(plid)})
-                           for plid in self.dual_graph.node_indices()]
+                           for plid in range(self.num_plaquettes)]
         hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
         hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
         return hamiltonian
