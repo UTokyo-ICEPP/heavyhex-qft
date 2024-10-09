@@ -3,6 +3,7 @@ from collections.abc import Callable
 from itertools import count
 from typing import Any
 import numpy as np
+import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from .pure_z2_lgt import PureZ2LGT
 
@@ -97,29 +98,23 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Construct the qubit mapping graph (nodes=links and plaquettes, edges=qubit connectivity)
         self.qubit_graph.add_nodes_from([('link', idx) for idx in self.graph.edge_indices()])
 
-        plaq_id_gen = iter(count())
-        for upper, lower in zip(node_ids[:-1], node_ids[1:]):
-            for ipos, top in enumerate(upper[:-1]):
-                endpoints = None
-                if (top is None and ipos > 0 and (left := upper[ipos - 1]) is not None
-                        and (right := upper[ipos + 1]) is not None
-                        and (bottom := lower[ipos]) is not None):
-                    endpoints = [(left, right), (right, bottom), (bottom, left)]
+        # Find the plaquettes through graph cycles of length 4
+        plaquettes = set()
+        for node in self.graph.node_indices():
+            for cycle in rx.all_simple_paths(self.graph, node, node):
+                if len(cycle) == 4:
+                    plaquettes.add(tuple(sorted(cycle[:3])))
 
-                if (top is not None and ipos > 0 and (left := lower[ipos - 1]) is not None
-                        and (right := lower[ipos + 1]) is not None):
-                    endpoints = [(left, right), (right, top), (top, left)]
-
-                if not endpoints:
-                    continue
-
-                plaq_node_id = self.qubit_graph.add_node(('plaq', next(plaq_id_gen)))
-                for n1, n2 in endpoints:
-                    link_id = list(self.graph.edge_indices_from_endpoints(n1, n2))[0]
-                    self.qubit_graph.add_edge(link_id, plaq_node_id, None)
+        for pid, plaquette in enumerate(sorted(plaquettes)):
+            plaq_node_id = self.qubit_graph.add_node(('plaq', pid))
+            for inode in range(3):
+                link_id = self.graph.edge_indices_from_endpoints(
+                    plaquette[inode], plaquette[(inode + 1) % 3]
+                )[0]
+                self.qubit_graph.add_edge(link_id, plaq_node_id, None)
 
         # Construct the dual graph
-        self.dual_graph.add_nodes_from(range(next(plaq_id_gen)))
+        self.dual_graph.add_nodes_from(range(len(plaquettes)))
         for link_id in self.graph.edge_indices():
             # pylint: disable-next=cell-var-from-loop
             link_node = list(self.qubit_graph.filter_nodes(lambda d: d == ('link', link_id)))[0]
