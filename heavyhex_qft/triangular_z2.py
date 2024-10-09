@@ -1,5 +1,9 @@
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
+from collections.abc import Callable
 from itertools import count
+from typing import Any
+import numpy as np
+from qiskit.circuit import QuantumCircuit
 from .pure_z2_lgt import PureZ2LGT
 
 
@@ -111,8 +115,54 @@ class TriangularZ2Lattice(PureZ2LGT):
 
                 plaq_node_id = self.qubit_graph.add_node(('plaq', next(plaq_id_gen)))
                 for n1, n2 in endpoints:
-                    self.qubit_graph.add_edge(
-                        list(self.graph.edge_indices_from_endpoints(n1, n2))[0],
-                        plaq_node_id,
-                        None
-                    )
+                    link_id = list(self.graph.edge_indices_from_endpoints(n1, n2))[0]
+                    self.qubit_graph.add_edge(link_id, plaq_node_id, None)
+
+        # Construct the dual graph
+        self.dual_graph.add_nodes_from(range(next(plaq_id_gen)))
+        for link_id in self.graph.edge_indices():
+            link_node = list(self.qubit_graph.filter_nodes(lambda d: d == ('link', link_id)))[0]
+            plaq_nodes = self.qubit_graph.neighbors(link_node)
+            pidx1 = self.qubit_graph[plaq_nodes[0]][1]
+            if len(plaq_nodes) == 1:
+                pidx2 = self.dual_graph.add_node(None)
+            else:
+                pidx2 = self.qubit_graph[plaq_nodes[1]][1]
+            self.dual_graph.add_edge(pidx1, pidx2, link_id)
+
+    def _layout_node_matcher(
+        self,
+        qubit_assignment: dict[tuple[str, int], int]
+    ) -> Callable[[Any, Any], bool]:
+
+        def node_matcher(physical_qubit_data, lattice_qubit_data):
+            physical_qubit, physical_neighbors = physical_qubit_data
+            node_type, _ = lattice_qubit_data
+            # True if this is an assigned qubit
+            if qubit_assignment.get(lattice_qubit_data) == physical_qubit:
+                return True
+            # Otherwise check the qubit type (plaq or link)
+            if node_type == 'plaq':
+                num_neighbors = 3
+            else:
+                num_neighbors = 2
+            return len(physical_neighbors) == num_neighbors
+
+        return node_matcher
+
+    def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
+        """Construct the Trotter evolution circuit of the magnetic term."""
+        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
+        plaquette_links = np.array([list(sorted(self.plaquette_links(plid)))
+                                    for plid in range(self.num_plaquettes)])
+        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        circuit.h(range(self.num_links))
+        circuit.cx(plaquette_links[:, 0], qpl)
+        circuit.cx(plaquette_links[:, 1], qpl)
+        circuit.cx(plaquette_links[:, 2], qpl)
+        circuit.rz(-2. * plaquette_energy * time, qpl)
+        circuit.cx(plaquette_links[:, 2], qpl)
+        circuit.cx(plaquette_links[:, 1], qpl)
+        circuit.cx(plaquette_links[:, 0], qpl)
+        circuit.h(range(self.num_links))
+        return circuit

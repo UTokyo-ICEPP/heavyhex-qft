@@ -1,6 +1,7 @@
 """Z2 lattice gauge theory with static charges."""
-from abc import ABC
-from typing import Union
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Any, Union
 import numpy as np
 from matplotlib.figure import Figure
 import rustworkx as rx
@@ -27,19 +28,21 @@ class PureZ2LGT(ABC):
     lattice, where the nodes correspond to qubits and can represent links or plaquettes, and the
     edges to the connections between qubits. The nodes and edges of the physical graph are labeled
     with integers corresponding to vertex and link ids. The nodes of the qubit graph are instead
-    labeled by 2-tuples with form (type, id) where type is either 'link' or 'plaq' and id is the
-    serial number of the link within each type (link id must coincide with the edge ids of the
-    physical graph). For a lattice with L links and P plaquettes, the qubit graph should have L+P
-    nodes, with the first L representing the links.
+    labeled by 2-tuples with form (type, id) where type is either 'link', 'anc', or 'plaq', and id
+    is the serial number of the edge within each type (link id must coincide with the edge ids of
+    the physical graph). For a lattice with L links and P plaquettes, the qubit graph with A
+    ancillas should have L+A+P nodes, with the first L representing the links, next A representing
+    the ancillas, and the last P as the plaquettes.
     """
     def __init__(self, num_vertices: int):
         self.graph = rx.PyGraph()
         self.graph.add_nodes_from(range(num_vertices))
+        self.dual_graph = rx.PyGraph()
         self.qubit_graph = rx.PyGraph()
 
     @property
     def num_plaquettes(self) -> int:
-        return len(self.qubit_graph.filter_nodes(lambda data: data[0] == 'plaq'))
+        return self.dual_graph.num_nodes()
 
     @property
     def num_links(self) -> int:
@@ -52,18 +55,19 @@ class PureZ2LGT(ABC):
     def draw_graph(self) -> Figure:
         return rx.visualization.mpl_draw(self.graph, with_labels=True, labels=str, edge_labels=str)
 
+    def draw_dual_graph(self) -> Figure:
+        return rx.visualization.mpl_draw(self.dual_graph, with_labels=True, labels=str,
+                                         edge_labels=str)
+
     def draw_qubit_graph(self) -> Figure:
         return rx.visualization.mpl_draw(self.qubit_graph, with_labels=True, labels=str)
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
-        """Return the list of node indices in the qubit graph corresponding to the links surrounding
-        the plaquette."""
-        plaq_node = list(self.qubit_graph.filter_nodes(lambda data: data == ('plaq', plaq_id)))[0]
-        return list(self.qubit_graph.neighbors(plaq_node))
+        """Return the list of ids of the links surrounding the plaquette."""
+        return list(self.dual_graph.incident_edges(plaq_id))
 
     def vertex_links(self, vertex_id: int) -> list[int]:
-        """Return the list of node indices in the qubit graph corresponding to the links incident
-        on the vertex.
+        """Return the list of ids of the links incident on the vertex.
 
         Note that the edge ids of the lattice graph and the node ids of the corresponding link
         qubits in the coincident.
@@ -87,20 +91,12 @@ class PureZ2LGT(ABC):
         """
         cgraph = coupling_map.graph.to_undirected()
         for idx in cgraph.node_indices():
-            if len(cgraph.neighbors(idx)) == 3:
-                cgraph[idx] = (idx, 'plaq')
-            else:
-                cgraph[idx] = (idx, 'link')
+            cgraph[idx] = (idx, tuple(cgraph.neighbors(idx)))
 
         if isinstance(qubit_assignment, int):
             qubit_assignment = {('link', 0): qubit_assignment}
 
-        def node_matcher(physical_qubit, lattice_qubit):
-            # True if this is an assigned qubit
-            if qubit_assignment.get(lattice_qubit) == physical_qubit[0]:
-                return True
-            # Otherwise check the qubit type (plaq or link)
-            return physical_qubit[1] == lattice_qubit[0]
+        node_matcher = self._layout_node_matcher(qubit_assignment)
 
         vf2 = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher, subgraph=True,
                              induced=False)
@@ -114,6 +110,13 @@ class PureZ2LGT(ABC):
             layout[logical_qubit] = physical_qubit
 
         return layout
+
+    @abstractmethod
+    def _layout_node_matcher(
+        self,
+        qubit_assignment: dict[tuple[str, int], int]
+    ) -> Callable[[Any, Any], bool]:
+        """Return the node matcher function for layout determination."""
 
     def to_pauli(self, link_ops: dict[int, str], pad_plaquettes: bool = False) -> str:
         """Form the Pauli string corresponding to the given link operators.
@@ -140,10 +143,9 @@ class PureZ2LGT(ABC):
         The lengths of the Pauli strings equal the number of links in the lattice, not the number
         of qubits.
         """
-        link_terms = [self.to_pauli({link_id: 'Z'}) for link_id in self.graph.edge_indices()]
-        plaquette_terms = []
-        for plid in range(self.num_plaquettes):
-            plaquette_terms.append(self.to_pauli({lid: 'X' for lid in self.plaquette_links(plid)}))
+        link_terms = [self.to_pauli({lid: 'Z'}) for lid in self.graph.edge_indices()]
+        plaquette_terms = [self.to_pauli({lid: 'X' for lid in self.plaquette_links(plid)})
+                           for plid in self.dual_graph.node_indices()]
         hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
         hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
         return hamiltonian
@@ -175,19 +177,6 @@ class PureZ2LGT(ABC):
         circuit.rz(-2. * time, range(self.num_links))
         return circuit
 
+    @abstractmethod
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
-        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        plaquette_links = np.array([list(sorted(self.plaquette_links(plid)))
-                                    for plid in range(self.num_plaquettes)])
-        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
-        circuit.h(range(self.num_links))
-        circuit.cx(plaquette_links[:, 0], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.rz(-2. * plaquette_energy * time, qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 0], qpl)
-        circuit.h(range(self.num_links))
-        return circuit
