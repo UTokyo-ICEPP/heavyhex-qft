@@ -3,6 +3,14 @@ from abc import ABC, abstractmethod
 from typing import Union
 import numpy as np
 from matplotlib.figure import Figure
+try:
+    import jax
+    import jax.numpy as jnp
+except ImportError:
+    jnp = np
+    HAS_JAX = False
+else:
+    HAS_JAX = True
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
@@ -38,6 +46,9 @@ class PureZ2LGT(ABC):
         self.graph.add_nodes_from(range(num_vertices))
         self.dual_graph = rx.PyGraph()
         self.qubit_graph = rx.PyGraph()
+
+        # Cached vertex parity
+        self._vertex_parity = None
 
     @property
     def num_plaquettes(self) -> int:
@@ -127,10 +138,11 @@ class PureZ2LGT(ABC):
     ) -> bool:
         """Node matcher function for qubit mapping."""
 
-    def to_pauli(self, link_ops: dict[int, str], pad_plaquettes: bool = False) -> str:
+    def to_pauli(self, link_ops: dict[int, str], pad_to_nq: bool = False) -> str:
         """Form the Pauli string corresponding to the given link operators.
 
-        If pad_plaquettes is True, ('I' * num_plaquettes) is appended to the returned string.
+        If pad_to_nq is True, returned string is padded with 'I's to align the length to the number
+        of qubits.
         """
         link_paulis = []
         for link_id, op in link_ops.items():
@@ -142,8 +154,8 @@ class PureZ2LGT(ABC):
             pauli = op + ('I' * (link - len(pauli))) + pauli
 
         pauli = 'I' * (self.num_links - len(pauli)) + pauli
-        if pad_plaquettes:
-            pauli = 'I' * self.num_plaquettes + pauli
+        if pad_to_nq:
+            pauli = 'I' * (self.qubit_graph.num_nodes() - self.num_links) + pauli
         return pauli
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
@@ -162,23 +174,45 @@ class PureZ2LGT(ABC):
     def charge_subspace(self, vertex_charge: list[int]) -> np.ndarray:
         """Return the dimensions of the full Hilbert space (d=2**num_link) that span the subspace
         of the given vertex charges.
-
-        TODO This implementation is very likely not efficient and unnecessarily restricts the
-        usability of the method to smaller number of links.
         """
+        if self.num_links > 32 or self.num_vertices > 64:
+            raise NotImplementedError('charge_subspace method is only available for <=32 links and'
+                                      ' <= 64 vertices.')
+        # pylint: disable-next=no-member
+        if HAS_JAX and not jax.config.jax_enable_x64 and self.num_vertices > 32:
+            raise RuntimeError('JAX is not configured with enable_x64=True')
         if len(vertex_charge) != self.num_vertices or any(c not in (0, 1) for c in vertex_charge):
             raise ValueError(f'Argument must be a length-{self.num_vertices} list of 0 or 1')
 
-        hspace_dim = 2 ** self.num_links
-        basis_indices = np.arange(hspace_dim)
-        all_bitstrings = np.array([(basis_indices >> i) % 2
-                                   for i in range(self.num_links)], dtype='uint8').T
-        flt = np.ones(hspace_dim, dtype='uint8')
-        for vertex, parity in enumerate(vertex_charge):
-            links = self.vertex_links(vertex)
-            flt *= np.asarray(np.sum(all_bitstrings[:, links], axis=1) % 2 == parity, dtype='uint8')
+        if self._vertex_parity is None:
+            # Convert the link bit patterns to 32-bit integer masks
+            masks = np.zeros(self.num_vertices, dtype=np.uint32)
+            for vertex in range(self.num_vertices):
+                links = self.vertex_links(vertex)
+                masks[vertex] = sum((1 << il) for il in links)
 
-        return np.nonzero(flt)[0]
+            hspace_dim = 2 ** self.num_links
+            self._vertex_parity = np.empty(hspace_dim, dtype=np.uint64)
+
+            # Apply the masks to each dimension index, count the number of 1 bits, and take the
+            # parity of the count
+            # Will work in 8 GiB chunks
+            step = (2 ** 33) // (4 * self.num_vertices)
+            for start in range(0, hspace_dim, step):
+                stop = min(hspace_dim, start + step)
+                print(f'Filling vertex parity array from {start} to {stop}')
+                vertex_parity = jnp.bitwise_count(
+                    jnp.arange(start, stop, dtype=np.uint32)[:, None] & masks
+                ) % 2
+                # Convert the 2D array of uint8s to 1D array of uint32s or uint64s
+                vertex_parity = jnp.sum(vertex_parity << np.arange(self.num_vertices), axis=1)
+                self._vertex_parity[start:stop] = np.asarray(vertex_parity)
+
+        # Convert the pattern of vertex charges to a 64-bit integer
+        charge_mask = np.sum(
+            np.array(vertex_charge) << np.arange(self.num_vertices)
+        )
+        return np.nonzero(self._vertex_parity == charge_mask)[0]
 
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
