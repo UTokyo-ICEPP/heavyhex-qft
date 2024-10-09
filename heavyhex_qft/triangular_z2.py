@@ -1,7 +1,6 @@
+# pylint: disable=unused-argument
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
-from collections.abc import Callable
 from itertools import count
-from typing import Any
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
@@ -128,23 +127,17 @@ class TriangularZ2Lattice(PureZ2LGT):
 
     def _layout_node_matcher(
         self,
-        qubit_assignment: dict[tuple[str, int], int]
-    ) -> Callable[[Any, Any], bool]:
-
-        def node_matcher(physical_qubit_data, lattice_qubit_data):
-            physical_qubit, physical_neighbors = physical_qubit_data
-            node_type, _ = lattice_qubit_data
-            # True if this is an assigned qubit
-            if qubit_assignment.get(lattice_qubit_data) == physical_qubit:
-                return True
-            # Otherwise check the qubit type (plaq or link)
-            if node_type == 'plaq':
-                num_neighbors = 3
-            else:
-                num_neighbors = 2
-            return len(physical_neighbors) == num_neighbors
-
-        return node_matcher
+        physical_qubit: int,
+        physical_neighbors: tuple[int, ...],
+        node_type: str,
+        obj_id: int
+    ) -> bool:
+        """Node matcher function for qubit mapping."""
+        if node_type == 'plaq':
+            num_neighbors = 3
+        else:
+            num_neighbors = 2
+        return len(physical_neighbors) == num_neighbors
 
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""

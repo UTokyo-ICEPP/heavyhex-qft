@@ -1,7 +1,6 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from typing import Any, Union
+from typing import Union
 import numpy as np
 from matplotlib.figure import Figure
 import rustworkx as rx
@@ -96,7 +95,14 @@ class PureZ2LGT(ABC):
         if isinstance(qubit_assignment, int):
             qubit_assignment = {('link', 0): qubit_assignment}
 
-        node_matcher = self._layout_node_matcher(qubit_assignment)
+        def node_matcher(physical_qubit_data, lattice_qubit_data):
+            physical_qubit, physical_neighbors = physical_qubit_data
+            node_type, obj_id = lattice_qubit_data
+            # True if this is an assigned qubit
+            if qubit_assignment.get(lattice_qubit_data) == physical_qubit:
+                return True
+            # Otherwise recall specific matcher
+            return self._layout_node_matcher(physical_qubit, physical_neighbors, node_type, obj_id)
 
         vf2 = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher, subgraph=True,
                              induced=False)
@@ -114,9 +120,12 @@ class PureZ2LGT(ABC):
     @abstractmethod
     def _layout_node_matcher(
         self,
-        qubit_assignment: dict[tuple[str, int], int]
-    ) -> Callable[[Any, Any], bool]:
-        """Return the node matcher function for layout determination."""
+        physical_qubit: int,
+        physical_neighbors: tuple[int, ...],
+        node_type: str,
+        obj_id: int
+    ) -> bool:
+        """Node matcher function for qubit mapping."""
 
     def to_pauli(self, link_ops: dict[int, str], pad_plaquettes: bool = False) -> str:
         """Form the Pauli string corresponding to the given link operators.
