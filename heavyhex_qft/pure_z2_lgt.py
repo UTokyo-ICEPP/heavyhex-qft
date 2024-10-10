@@ -1,16 +1,9 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
+from itertools import combinations, count
 from typing import Union
 import numpy as np
 from matplotlib.figure import Figure
-try:
-    import jax
-    import jax.numpy as jnp
-except ImportError:
-    jnp = np
-    HAS_JAX = False
-else:
-    HAS_JAX = True
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
@@ -175,44 +168,51 @@ class PureZ2LGT(ABC):
         """Return the dimensions of the full Hilbert space (d=2**num_link) that span the subspace
         of the given vertex charges.
         """
-        if self.num_links > 32 or self.num_vertices > 64:
-            raise NotImplementedError('charge_subspace method is only available for <=32 links and'
-                                      ' <= 64 vertices.')
-        # pylint: disable-next=no-member
-        if HAS_JAX and not jax.config.jax_enable_x64 and self.num_vertices > 32:
-            raise RuntimeError('JAX is not configured with enable_x64=True')
+        if self.num_links > 64:
+            raise NotImplementedError('charge_subspace method is only available for lattices with'
+                                      ' <= 64 links')
         if len(vertex_charge) != self.num_vertices or any(c not in (0, 1) for c in vertex_charge):
             raise ValueError(f'Argument must be a length-{self.num_vertices} list of 0 or 1')
 
-        if self._vertex_parity is None:
-            # Convert the link bit patterns to 32-bit integer masks
-            masks = np.zeros(self.num_vertices, dtype=np.uint32)
-            for vertex in range(self.num_vertices):
-                links = self.vertex_links(vertex)
-                masks[vertex] = sum((1 << il) for il in links)
+        # Bit patterns of link excitations - final shape will be (subspace_dim, num_links)
+        mask_all = np.array([[False] * self.num_links])
+        covered_lids = set()
+        for ivert, parity in enumerate(vertex_charge):
+            lids = self.vertex_links(ivert)
+            nl = len(lids)
 
-            hspace_dim = 2 ** self.num_links
-            self._vertex_parity = np.empty(hspace_dim, dtype=np.uint64)
+            # Bit patterns of link excitations for this vertex
+            # The number of combinations is [sum_{j in even or odd} nCj] where n is the number of
+            # links. Because (1 - 1)^n = sum_{j}(-1)^j*nCj = 0 and (1 + 1)^n = sum_{j}nCj = 2^n, we
+            # know that we have 2^{n-1} combinations.
+            mask_vertex = np.zeros((2 ** (nl - 1), self.num_links), dtype=bool)
+            icomb = iter(count())
+            # Loop over all combinations of link excitations that produce the given parity
+            for nup in range(parity, nl + 1, 2):
+                for comb in combinations(lids, nup):
+                    mask_vertex[next(icomb), list(comb)] = True
 
-            # Apply the masks to each dimension index, count the number of 1 bits, and take the
-            # parity of the count
-            # Will work in 8 GiB chunks
-            step = (2 ** 33) // (4 * self.num_vertices)
-            for start in range(0, hspace_dim, step):
-                stop = min(hspace_dim, start + step)
-                print(f'Filling vertex parity array from {start} to {stop}')
-                vertex_parity = jnp.bitwise_count(
-                    jnp.arange(start, stop, dtype=np.uint32)[:, None] & masks
-                ) % 2
-                # Convert the 2D array of uint8s to 1D array of uint32s or uint64s
-                vertex_parity = jnp.sum(vertex_parity << np.arange(self.num_vertices), axis=1)
-                self._vertex_parity[start:stop] = np.asarray(vertex_parity)
+            # Will compare the mask for vertex with the aggregate mask only over overlapping links
+            compared_lids = list(set(lids) & set(covered_lids))
+            # Links must be either both excited or unexcited to be compatible
+            compatible = np.logical_not(
+                np.any(
+                    np.logical_xor(
+                        mask_vertex[None, :, compared_lids],
+                        mask_all[:, None, compared_lids]
+                    ),
+                    axis=2
+                )
+            )
+            # Update the aggregate mask
+            mask_all = (mask_vertex[None, ...] | mask_all[:, None, :])[compatible]
+            covered_lids.update(lids)
 
-        # Convert the pattern of vertex charges to a 64-bit integer
-        charge_mask = np.sum(
-            np.array(vertex_charge) << np.arange(self.num_vertices)
+        indices = np.sum(
+            np.asarray(mask_all, dtype=np.uint64) << np.arange(self.num_links, dtype=np.uint64),
+            axis=1
         )
-        return np.nonzero(self._vertex_parity == charge_mask)[0]
+        return np.sort(indices)
 
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
