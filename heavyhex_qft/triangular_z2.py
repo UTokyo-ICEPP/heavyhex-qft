@@ -100,7 +100,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Find the plaquettes through graph cycles of length 4
         plaquettes = set()
         for node in self.graph.node_indices():
-            for cycle in rx.all_simple_paths(self.graph, node, node):
+            for cycle in rx.all_simple_paths(self.graph, node, node, min_depth=4, cutoff=4):
                 if len(cycle) == 4:
                     plaquettes.add(tuple(sorted(cycle[:3])))
 
@@ -134,10 +134,9 @@ class TriangularZ2Lattice(PureZ2LGT):
     ) -> bool:
         """Node matcher function for qubit mapping."""
         if node_type == 'plaq':
-            num_neighbors = 3
+            return len(physical_neighbors) == 3
         else:
-            num_neighbors = 2
-        return len(physical_neighbors) == num_neighbors
+            return len(physical_neighbors) in (1, 2)
 
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""

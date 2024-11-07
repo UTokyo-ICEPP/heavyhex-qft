@@ -103,8 +103,8 @@ class PureZ2LGT(ABC):
             physical_qubit, physical_neighbors = physical_qubit_data
             node_type, obj_id = lattice_qubit_data
             # True if this is an assigned qubit
-            if qubit_assignment.get(lattice_qubit_data) == physical_qubit:
-                return True
+            if (assignment := qubit_assignment.get(lattice_qubit_data)) is not None:
+                return assignment == physical_qubit
             # Otherwise recall specific matcher
             return self._layout_node_matcher(physical_qubit, physical_neighbors, node_type, obj_id)
 
