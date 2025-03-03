@@ -141,9 +141,20 @@ class TriangularZ2Lattice(PureZ2LGT):
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        plaquette_links = np.array([list(sorted(self.plaquette_links(plid)))
-                                    for plid in range(self.num_plaquettes)])
+        # List of link qubits for each plaquette, ordered counterclockwise
+        plaquette_links = []
+        for plid in range(self.num_plaquettes):
+            links = list(sorted(self.plaquette_links(plid)))
+            if links[2] - links[1] == 1:
+                # Downward pointing plaquette
+                plaquette_links.append(links)
+            else:
+                # Upward pointing plaquette
+                plaquette_links.append([links[0], links[2], links[1]])
+        plaquette_links = np.array(plaquette_links)
+        # Plaquette qubit ids
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
         circuit.cx(plaquette_links[:, 0], qpl)
         circuit.cx(plaquette_links[:, 1], qpl)
