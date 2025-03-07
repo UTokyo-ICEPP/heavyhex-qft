@@ -138,7 +138,12 @@ class TriangularZ2Lattice(PureZ2LGT):
         else:
             return len(physical_neighbors) in (1, 2)
 
-    def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
+    def magnetic_evolution(
+        self,
+        plaquette_energy: float,
+        time: float,
+        basis_2q: str = 'cx'
+    ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
         # List of link qubits for each plaquette, ordered counterclockwise
@@ -156,12 +161,34 @@ class TriangularZ2Lattice(PureZ2LGT):
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
-        circuit.cx(plaquette_links[:, 0], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.rz(-2. * plaquette_energy * time, qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 0], qpl)
+        if basis_2q == 'cx':
+            circuit.cx(plaquette_links[:, 0], qpl)
+            circuit.cx(plaquette_links[:, 1], qpl)
+            circuit.cx(plaquette_links[:, 2], qpl)
+            circuit.rz(-2. * plaquette_energy * time, qpl)
+            circuit.cx(plaquette_links[:, 2], qpl)
+            circuit.cx(plaquette_links[:, 1], qpl)
+            circuit.cx(plaquette_links[:, 0], qpl)
+        elif basis_2q == 'cz':
+            circuit.h(qpl)
+            circuit.cz(plaquette_links[:, 0], qpl)
+            circuit.cz(plaquette_links[:, 1], qpl)
+            circuit.cz(plaquette_links[:, 2], qpl)
+            circuit.rx(-2. * plaquette_energy * time, qpl)
+            circuit.cz(plaquette_links[:, 2], qpl)
+            circuit.cz(plaquette_links[:, 1], qpl)
+            circuit.cz(plaquette_links[:, 0], qpl)
+            circuit.h(qpl)
+        elif basis_2q == 'rzz':
+            circuit.cx(plaquette_links[:, 0], qpl)
+            circuit.cx(plaquette_links[:, 1], qpl)
+            if time > 0.:
+                # Continuous Rzz accepts positive arguments only; sandwitch with Xs to reverse sign
+                circuit.x(qpl)
+            circuit.rzz(2. * plaquette_energy * time, plaquette_links[:, 2], qpl)
+            if time > 0.:
+                circuit.x(qpl)
+            circuit.cx(plaquette_links[:, 1], qpl)
+            circuit.cx(plaquette_links[:, 0], qpl)
         circuit.h(range(self.num_links))
         return circuit

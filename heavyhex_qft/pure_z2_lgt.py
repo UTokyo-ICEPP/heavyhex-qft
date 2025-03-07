@@ -221,5 +221,10 @@ class PureZ2LGT(ABC):
         return circuit
 
     @abstractmethod
-    def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
+    def magnetic_evolution(
+        self,
+        plaquette_energy: float,
+        time: float,
+        basis_2q: str = 'cx'
+    ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
