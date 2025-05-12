@@ -1,5 +1,6 @@
 # pylint: disable=unused-argument
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
+from collections import defaultdict
 from itertools import count
 import numpy as np
 import rustworkx as rx
@@ -138,15 +139,8 @@ class TriangularZ2Lattice(PureZ2LGT):
         else:
             return len(physical_neighbors) in (1, 2)
 
-    def magnetic_evolution(
-        self,
-        plaquette_energy: float,
-        time: float,
-        basis_2q: str = 'cx'
-    ) -> QuantumCircuit:
-        """Construct the Trotter evolution circuit of the magnetic term."""
-        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        # List of link qubits for each plaquette, ordered counterclockwise
+    def _plaquette_links(self):
+        """Return a list of link qubits for each plaquette, ordered counterclockwise."""
         plaquette_links = []
         for plid in range(self.num_plaquettes):
             links = list(sorted(self.plaquette_links(plid)))
@@ -156,7 +150,17 @@ class TriangularZ2Lattice(PureZ2LGT):
             else:
                 # Upward pointing plaquette
                 plaquette_links.append([links[0], links[2], links[1]])
-        plaquette_links = np.array(plaquette_links)
+        return np.array(plaquette_links)
+
+    def magnetic_evolution(
+        self,
+        plaquette_energy: float,
+        time: float,
+        basis_2q: str = 'cx'
+    ) -> QuantumCircuit:
+        """Construct the Trotter evolution circuit of the magnetic term."""
+        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
+        plaquette_links = self._plaquette_links()
         # Plaquette qubit ids
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
         # Rzzz circuit sandwitched by Hadamards on all links
@@ -192,3 +196,26 @@ class TriangularZ2Lattice(PureZ2LGT):
             circuit.cx(plaquette_links[:, 0], qpl)
         circuit.h(range(self.num_links))
         return circuit
+
+    def magnetic_2q_gate_counts(
+        self,
+        basis_2q: str = 'cx'
+    ) -> dict[tuple[str, tuple[int, int]], int]:
+        """Return a list of (gate name, qubits, counts)."""
+        gate_counts = defaultdict(int)
+        plaquette_links = self._plaquette_links()
+        # Plaquette qubit ids
+        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        if basis_2q in ['cx', 'cz']:
+            for side in range(3):
+                for ctrl, targ in zip(plaquette_links[:, side], qpl):
+                    gate_counts[(basis_2q, (ctrl, targ))] += 2
+
+        elif basis_2q == 'rzz':
+            for side in range(2):
+                for ctrl, targ in zip(plaquette_links[:, side], qpl):
+                    gate_counts[('cx', (ctrl, targ))] += 2
+            for ctrl, targ in zip(plaquette_links[:, 2], qpl):
+                gate_counts[('rzz', (ctrl, targ))] += 1
+
+        return dict(gate_counts)

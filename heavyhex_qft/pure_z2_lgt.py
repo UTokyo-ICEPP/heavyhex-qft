@@ -1,13 +1,15 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
 from itertools import combinations, count
-from typing import Union
+from typing import Optional
 import numpy as np
 from matplotlib.figure import Figure
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.providers.exceptions import BackendPropertyError
+from qiskit_ibm_runtime.models import BackendProperties
 
 
 class PureZ2LGT(ABC):
@@ -80,14 +82,22 @@ class PureZ2LGT(ABC):
     def layout_heavy_hex(
         self,
         coupling_map: CouplingMap,
-        qubit_assignment: Union[int, dict[tuple[str, int], int]]
+        qubit_assignment: Optional[int | dict[tuple[str, int], int]] = None,
+        backend_properties: Optional[BackendProperties] = None,
+        basis_2q: str = 'cx'
     ) -> list[int]:
         """Return the physical qubit layout of the qubit graph using qubits in the coupling map.
+
+        If qubit_assignment is not given or results in multiple layout candidates, the candidate
+        with the smallest product of gate and readout errors are used. If backend properties are
+        also not given, a candidate is randomly chosen.
 
         Args:
             coupling_map: backend.coupling_map.
             qubit_assignment: Physical qubit id to assign link 0 to, or an assignment hint dict of
                 form {('link' or 'plaq', id): (physical qubit)}.
+            backend_properties: Backend properties to extract the gate and readout error data from.
+            basis_2q: 2-qubit gate specification for the magnetic circuit.
 
         Returns:
             List of physical qubit ids to be passed to the transpiler.
@@ -96,30 +106,68 @@ class PureZ2LGT(ABC):
         for idx in cgraph.node_indices():
             cgraph[idx] = (idx, tuple(cgraph.neighbors(idx)))
 
-        if isinstance(qubit_assignment, int):
-            qubit_assignment = {('link', 0): qubit_assignment}
+        if qubit_assignment is None:
+            node_matcher = None
+        else:
+            if isinstance(qubit_assignment, int):
+                qubit_assignment = {('link', 0): qubit_assignment}
 
-        def node_matcher(physical_qubit_data, lattice_qubit_data):
-            physical_qubit, physical_neighbors = physical_qubit_data
-            node_type, obj_id = lattice_qubit_data
-            # True if this is an assigned qubit
-            if (assignment := qubit_assignment.get(lattice_qubit_data)) is not None:
-                return assignment == physical_qubit
-            # Otherwise recall specific matcher
-            return self._layout_node_matcher(physical_qubit, physical_neighbors, node_type, obj_id)
+            def node_matcher(physical_qubit_data, lattice_qubit_data):
+                physical_qubit, physical_neighbors = physical_qubit_data
+                node_type, obj_id = lattice_qubit_data
+                # True if this is an assigned qubit
+                if (assignment := qubit_assignment.get(lattice_qubit_data)) is not None:
+                    return assignment == physical_qubit
+                # Otherwise recall class-default matcher
+                return self._layout_node_matcher(physical_qubit, physical_neighbors, node_type,
+                                                 obj_id)
 
-        vf2 = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher, subgraph=True,
-                             induced=False)
-        try:
-            mapping = next(vf2)
-        except StopIteration as exc:
-            raise ValueError('Layout with the given qubit assignment could not be found.') from exc
+        mappings = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher,
+                                  subgraph=True, induced=False)
 
-        layout = [None] * self.qubit_graph.num_nodes()
-        for physical_qubit, logical_qubit in mapping.items():
-            layout[logical_qubit] = physical_qubit
+        # 2Q basis gate for the backend
+        twoq_gate_name = ''
+        if backend_properties is not None:
+            twoq_gate_name = next(gate_prop.gate for gate_prop in backend_properties.gates
+                                  if gate_prop.gate in ['ecr', 'cz'])
 
-        return layout
+        score_max, best_layout = None, None
+        for mapping in mappings:
+            layout = [None] * self.qubit_graph.num_nodes()
+            for physical_qubit, logical_qubit in mapping.items():
+                layout[logical_qubit] = physical_qubit
+
+            if backend_properties is None:
+                best_layout = layout
+                break
+
+            # Readout errors of the link qubits
+            log_error_score = sum(
+                np.log(1. - min(backend_properties.readout_error(qubit), 0.99999))
+                for qubit in layout[:self.num_links]
+            )
+            # 2Q gate errors
+            for (gate, logical_qubits), counts in self.magnetic_2q_gate_counts(basis_2q).items():
+                if gate in ['cx', 'cz']:
+                    gate_name = twoq_gate_name
+                else:
+                    gate_name = gate  # rzz
+                qubits = tuple(layout[qubit] for qubit in logical_qubits)
+                try:
+                    gate_error = backend_properties.gate_error(gate_name, qubits)
+                except BackendPropertyError:
+                    gate_error = backend_properties.gate_error(gate_name, qubits[::-1])
+                error = min(gate_error, 0.99999)
+                log_error_score += np.log(1. - error) * counts
+            # If best score, remember the layout
+            if score_max is None or log_error_score > score_max:
+                score_max = log_error_score
+                best_layout = layout
+
+        if best_layout is None:
+            raise ValueError('Layout with the given qubit assignment could not be found.')
+
+        return best_layout
 
     @abstractmethod
     def _layout_node_matcher(
@@ -228,3 +276,10 @@ class PureZ2LGT(ABC):
         basis_2q: str = 'cx'
     ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
+
+    @abstractmethod
+    def magnetic_2q_gate_counts(
+        self,
+        basis_2q: str = 'cx'
+    ) -> dict[tuple[str, tuple[int, int]], int]:
+        """Return a list of (gate name, qubits, counts)."""
