@@ -189,7 +189,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             if time > 0.:
                 # Continuous Rzz accepts positive arguments only; sandwitch with Xs to reverse sign
                 circuit.x(qpl)
-            circuit.rzz(2. * plaquette_energy * time, plaquette_links[:, 2], qpl)
+            circuit.rzz(2. * plaquette_energy * abs(time), plaquette_links[:, 2], qpl)
             if time > 0.:
                 circuit.x(qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
