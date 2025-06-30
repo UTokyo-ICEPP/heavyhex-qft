@@ -2,6 +2,7 @@
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from collections import defaultdict
 from itertools import count
+import re
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
@@ -12,11 +13,12 @@ class TriangularZ2Lattice(PureZ2LGT):
     r"""Triangular lattice for pure-Z2 gauge theory.
 
     The constructor takes a string argument representing the structure of the lattice. The string
-    should contain only characters '*', ' ', and '\n', with the asterisks representing the locations
-    of the vertices. Vertices appearing in a single line are aligned horizontally. There must be an
-    odd number of whitespaces between the asterisks, with a single space indicating the existence
-    of a horizontal link between the vertices. The placement of asterisks in two consecutive lines
-    must be staggered.
+    should contain only characters '*', '^', 'v', ' ', and '\n', with the non-whitespace characters
+    representing the locations of the vertices. Vertices appearing in a single line are aligned
+    horizontally. There must be an odd number of whitespaces between the vertex characters.
+    Different characters represent the number of edges emanating from the vertex: '*' is a full
+    (hexagonal) vertex, and '^' and 'v' are top- and bottom-row vertices with only two edges.
+    The placement of asterisks in two consecutive lines must be staggered.
 
     Examples:
         - Two plaquettes
@@ -44,7 +46,7 @@ class TriangularZ2Lattice(PureZ2LGT):
     def __init__(self, configuration: str):
         # Sanitize the configuration string
         config_rows = configuration.split('\n')
-        if any(row.replace('*', '').strip() for row in config_rows):
+        if any(re.search('[^ *^v]', row) for row in config_rows):
             raise ValueError('Lattice constructor argument contains invalid character(s)')
         first_row = 0
         while not config_rows[first_row].strip():
@@ -64,36 +66,40 @@ class TriangularZ2Lattice(PureZ2LGT):
         config_rows = [row[:last_column] for row in config_rows]
         config_rows = [row + (' ' * (last_column - len(row))) for row in config_rows]
 
-        if any('**' in row for row in config_rows):
+        if any(re.search('[*^v][*^v]', row) for row in config_rows):
             raise ValueError('Adjacent vertices')
         for upper, lower in zip(config_rows[:-1], config_rows[1:]):
-            if any(u == '*' and l == '*' for u, l in zip(upper, lower)):
+            if any(u != ' ' and l != ' ' for u, l in zip(upper, lower)):
                 raise ValueError('Lattice rows not staggered')
 
-        super().__init__(configuration.count('*'))
+        super().__init__(len(re.findall('[*^v]', configuration)))
 
         # Construct the lattice graph (nodes=vertices, edges=links)
         node_id_gen = iter(self.graph.node_indices())
+        edge_id_gen = iter(count())
+        start_cols = []
         node_ids = []
         for row in config_rows:
-            node_ids.append([next(node_id_gen) if char == '*' else None for char in row])
+            row_node_ids = []
+            start_col = next(i for i, c in enumerate(row) if c != ' ')
+            start_cols.append(start_col)
+            for ichar, char in enumerate(row[start_col::2]):
+                if char == ' ':
+                    row_node_ids.append(None)
+                else:
+                    row_node_ids.append(next(node_id_gen))
+                if char == '*' and ichar > 0 and row[start_col + 2 * (ichar - 1)] == '*':
+                    self.graph.add_edge(row_node_ids[-2], row_node_ids[-1], next(edge_id_gen))
+            node_ids.append(row_node_ids)
 
-        edge_id_gen = iter(count())
-        for upper, lower in zip(node_ids[:-1], node_ids[1:]):
-            for ipos, left in enumerate(upper[:-2]):
-                if left is not None and (right := upper[ipos + 2]) is not None:
-                    self.graph.add_edge(left, right, next(edge_id_gen))
-            for ipos, top in enumerate(upper):
-                if top is None:
-                    continue
-                if ipos > 0 and (bottom := lower[ipos - 1]) is not None:
-                    self.graph.add_edge(top, bottom, next(edge_id_gen))
-                if ipos < len(lower) - 1 and (bottom := lower[ipos + 1]) is not None:
-                    self.graph.add_edge(top, bottom, next(edge_id_gen))
-
-        for ipos, left in enumerate(node_ids[-1][:-2]):
-            if left is not None and (right := node_ids[-1][ipos + 2]) is not None:
-                self.graph.add_edge(left, right, next(edge_id_gen))
+        for iupper, ilower in zip(range(len(config_rows) - 1), range(1, len(config_rows))):
+            # Overlay the two rows - staggering is guaranteed above
+            overlaid = [None] * last_column
+            overlaid[start_cols[iupper]::2] = node_ids[iupper]
+            overlaid[start_cols[ilower]::2] = node_ids[ilower]
+            for inode1, inode2 in zip(overlaid[:-1], overlaid[1:]):
+                if inode1 is not None and inode2 is not None:
+                    self.graph.add_edge(inode1, inode2, next(edge_id_gen))
 
         # Construct the qubit mapping graph (nodes=links and plaquettes, edges=qubit connectivity)
         self.qubit_graph.add_nodes_from([('link', idx) for idx in self.graph.edge_indices()])
@@ -119,6 +125,8 @@ class TriangularZ2Lattice(PureZ2LGT):
             # pylint: disable-next=cell-var-from-loop
             link_node = self.qubit_graph.filter_nodes(lambda d: d == ('link', link_id))[0]
             plaq_nodes = self.qubit_graph.neighbors(link_node)
+            if len(plaq_nodes) == 0:
+                continue
             pidx1 = self.qubit_graph[plaq_nodes[0]][1]
             if len(plaq_nodes) == 1:
                 pidx2 = self.dual_graph.add_node(None)
