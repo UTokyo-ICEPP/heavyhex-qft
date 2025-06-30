@@ -67,6 +67,19 @@ class PureZ2LGT(ABC):
     def draw_qubit_graph(self) -> Figure:
         return rx.visualization.mpl_draw(self.qubit_graph, with_labels=True, labels=str)
 
+    def draw_qubit_map(
+        self,
+        coupling_map: CouplingMap,
+        layout: Optional[list[int]] = None,
+        qubit_assignment: Optional[int | dict[tuple[str, int], int]] = None,
+        backend_properties: Optional[BackendProperties] = None,
+        basis_2q: Optional[str] = 'cx'
+    ) -> Figure:
+        if layout is None:
+            layout = self.layout_heavy_hex(coupling_map, qubit_assignment=qubit_assignment,
+                                           backend_properties=backend_properties, basis_2q=basis_2q)
+        return None
+
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of ids of the links surrounding the plaquette."""
         return list(self.dual_graph.incident_edges(plaq_id))
@@ -178,6 +191,11 @@ class PureZ2LGT(ABC):
         obj_id: int
     ) -> bool:
         """Node matcher function for qubit mapping."""
+
+    def get_syndromes(self, bitstring: str) -> np.ndarray:
+        """Compute the bit-flip syndromes from a link measurement result."""
+        zevs = 1 - 2 * np.array(list(map(int, bitstring[::-1])), dtype=int)
+        return np.array([np.prod(zevs[self.vertex_links(iv)]) for iv in range(self.num_vertices)])
 
     def to_pauli(self, link_ops: dict[int, str], pad_to_nq: bool = False) -> str:
         """Form the Pauli string corresponding to the given link operators.
