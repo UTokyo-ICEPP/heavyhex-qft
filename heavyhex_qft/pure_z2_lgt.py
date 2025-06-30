@@ -137,6 +137,9 @@ class PureZ2LGT(ABC):
 
         mappings = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher,
                                   subgraph=True, induced=False)
+        mappings = list(mappings)
+        if len(mappings) == 0:
+            raise ValueError('Layout with the given qubit assignment could not be found.')
 
         # 2Q basis gate for the backend
         twoq_gate_name = ''
@@ -178,7 +181,7 @@ class PureZ2LGT(ABC):
                 best_layout = layout
 
         if best_layout is None:
-            raise ValueError('Layout with the given qubit assignment could not be found.')
+            raise ValueError('I do not think this would ever happen')
 
         return best_layout
 
