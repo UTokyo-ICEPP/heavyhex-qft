@@ -171,22 +171,24 @@ class TriangularZ2Lattice(PureZ2LGT):
         plaquette_links = self._plaquette_links()
         # Plaquette qubit ids
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        # Rzzz rotation angle
+        angle = (-2. * plaquette_energy * time + np.pi) % (2. * np.pi) - np.pi
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
         if basis_2q == 'cx':
             circuit.cx(plaquette_links[:, 0], qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
             circuit.cx(plaquette_links[:, 2], qpl)
-            circuit.rz(-2. * plaquette_energy * time, qpl)
+            circuit.rz(angle, qpl)
             circuit.cx(plaquette_links[:, 2], qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
             circuit.cx(plaquette_links[:, 0], qpl)
-        elif basis_2q == 'cz':
+        elif basis_2q == 'cz' or (basis_2q == 'rzz' and abs(angle) > np.pi / 2.):
             circuit.h(qpl)
             circuit.cz(plaquette_links[:, 0], qpl)
             circuit.cz(plaquette_links[:, 1], qpl)
             circuit.cz(plaquette_links[:, 2], qpl)
-            circuit.rx(-2. * plaquette_energy * time, qpl)
+            circuit.rx(angle, qpl)
             circuit.cz(plaquette_links[:, 2], qpl)
             circuit.cz(plaquette_links[:, 1], qpl)
             circuit.cz(plaquette_links[:, 0], qpl)
@@ -194,11 +196,11 @@ class TriangularZ2Lattice(PureZ2LGT):
         elif basis_2q == 'rzz':
             circuit.cx(plaquette_links[:, 0], qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
-            if time > 0.:
+            if angle < 0.:
                 # Continuous Rzz accepts positive arguments only; sandwitch with Xs to reverse sign
                 circuit.x(qpl)
-            circuit.rzz(2. * plaquette_energy * abs(time), plaquette_links[:, 2], qpl)
-            if time > 0.:
+            circuit.rzz(abs(angle), plaquette_links[:, 2], qpl)
+            if angle < 0.:
                 circuit.x(qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
             circuit.cx(plaquette_links[:, 0], qpl)
