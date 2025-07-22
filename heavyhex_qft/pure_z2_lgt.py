@@ -1,3 +1,4 @@
+# pylint: disable=no-member
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -9,8 +10,8 @@ import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
 from qiskit.quantum_info import SparsePauliOp
-from qiskit.providers.exceptions import BackendPropertyError
 from qiskit_ibm_runtime.models import BackendProperties
+from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
 from .utils import as_bitarray, to_pauli_string
 
 
