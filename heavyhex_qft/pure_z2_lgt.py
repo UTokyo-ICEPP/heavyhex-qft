@@ -6,13 +6,15 @@ from itertools import combinations, count
 from typing import Optional
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.axes import Axes
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.providers import Backend
 from qiskit_ibm_runtime.models import BackendProperties
 from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
-from .utils import as_bitarray, to_pauli_string
+from .utils import as_bitarray, to_pauli_string, qubit_coordinates
 
 
 class PureZ2LGT(ABC):
@@ -70,7 +72,8 @@ class PureZ2LGT(ABC):
     def draw_graph(
         self,
         vertices: Optional[Sequence[int]] = None,
-        links: Optional[Sequence[int]] = None
+        links: Optional[Sequence[int]] = None,
+        ax: Optional[Axes] = None
     ) -> Figure:
         kwargs = {'labels': str, 'edge_labels': str}
         if vertices is not None:
@@ -87,27 +90,56 @@ class PureZ2LGT(ABC):
             for il in links:
                 kwargs['edge_color'][il] = 'r'
 
-        return rx.visualization.mpl_draw(self.graph, with_labels=True, **kwargs)
+        if (pos := self._graph_node_pos()) is not None:
+            kwargs['pos'] = pos
 
-    def draw_dual_graph(self) -> Figure:
-        return rx.visualization.mpl_draw(self.dual_graph, with_labels=True, labels=str,
+        return rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
+
+    def _graph_node_pos(self) -> dict[int, tuple[float, float]] | None:
+        return None
+
+    def draw_dual_graph(self, ax: Optional[Axes] = None) -> Figure:
+        return rx.visualization.mpl_draw(self.dual_graph, ax=ax, with_labels=True, labels=str,
                                          edge_labels=str)
 
-    def draw_qubit_graph(self) -> Figure:
-        return rx.visualization.mpl_draw(self.qubit_graph, with_labels=True, labels=str)
-
-    def draw_qubit_map(
+    def draw_qubit_graph(
         self,
-        coupling_map: CouplingMap,
         layout: Optional[list[int]] = None,
-        qubit_assignment: Optional[int | dict[tuple[str, int], int]] = None,
-        backend_properties: Optional[BackendProperties] = None,
-        basis_2q: Optional[str] = 'cx'
+        coupling_map: Optional[Backend] = None,
+        ax: Optional[Axes] = None
     ) -> Figure:
-        if layout is None:
-            layout = self.layout_heavy_hex(coupling_map, qubit_assignment=qubit_assignment,
-                                           backend_properties=backend_properties, basis_2q=basis_2q)
-        return None
+        kwargs = {
+            'node_size': 200,
+            'node_color': ['#cc8811'] * self.num_links + ['#88cc11'] * self.num_plaquettes
+        }
+
+        if layout is not None:
+            def labels(payload):
+                if payload[0] == 'link':
+                    logical_qubit = payload[1]
+                else:
+                    logical_qubit = payload[1] + self.num_links
+                return f'{layout[logical_qubit]}\n{payload[0][0]}:{payload[1]}'
+
+            if coupling_map is not None:
+                coords = qubit_coordinates(coupling_map)
+                pos = {}
+                for nidx in self.qubit_graph.node_indices():
+                    payload = self.qubit_graph.get_node_data(nidx)
+                    if payload[0] == 'link':
+                        logical_qubit = payload[1]
+                    else:
+                        logical_qubit = payload[1] + self.num_links
+                    row, col = coords[layout[logical_qubit]]
+                    pos[nidx] = (col, row)
+
+                kwargs['pos'] = pos
+        else:
+            labels = str
+
+        kwargs['labels'] = labels
+
+        return rx.visualization.mpl_draw(self.qubit_graph, ax=ax, with_labels=True, **kwargs)
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of ids of the links surrounding the plaquette."""

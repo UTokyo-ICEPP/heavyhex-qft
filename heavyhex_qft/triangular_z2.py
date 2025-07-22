@@ -77,26 +77,23 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Construct the lattice graph (nodes=vertices, edges=links)
         node_id_gen = iter(self.graph.node_indices())
         edge_id_gen = iter(count())
-        start_cols = []
-        node_ids = []
+        self._row_nodes = []
         for row in config_rows:
-            row_node_ids = []
-            start_col = next(i for i, c in enumerate(row) if c != ' ')
-            start_cols.append(start_col)
-            for ichar, char in enumerate(row[start_col::2]):
-                if char == ' ':
-                    row_node_ids.append(None)
-                else:
-                    row_node_ids.append(next(node_id_gen))
-                if char == '*' and ichar > 0 and row[start_col + 2 * (ichar - 1)] == '*':
-                    self.graph.add_edge(row_node_ids[-2], row_node_ids[-1], next(edge_id_gen))
-            node_ids.append(row_node_ids)
+            row_nodes = []
+            for icol, char in enumerate(row):
+                if char != ' ':
+                    row_nodes.append((icol, next(node_id_gen)))
+                if char == '*' and icol > 1 and row[icol - 2] == '*':
+                    self.graph.add_edge(row_nodes[-2][1], row_nodes[-1][1], next(edge_id_gen))
+            self._row_nodes.append(row_nodes)
 
         for iupper, ilower in zip(range(len(config_rows) - 1), range(1, len(config_rows))):
             # Overlay the two rows - staggering is guaranteed above
             overlaid = [None] * last_column
-            overlaid[start_cols[iupper]::2] = node_ids[iupper]
-            overlaid[start_cols[ilower]::2] = node_ids[ilower]
+            for icol, node_id in self._row_nodes[iupper]:
+                overlaid[icol] = node_id
+            for icol, node_id in self._row_nodes[ilower]:
+                overlaid[icol] = node_id
             for inode1, inode2 in zip(overlaid[:-1], overlaid[1:]):
                 if inode1 is not None and inode2 is not None:
                     self.graph.add_edge(inode1, inode2, next(edge_id_gen))
@@ -133,6 +130,14 @@ class TriangularZ2Lattice(PureZ2LGT):
             else:
                 pidx2 = self.qubit_graph[plaq_nodes[1]][1]
             self.dual_graph.add_edge(pidx1, pidx2, link_id)
+
+    def _graph_node_pos(self) -> dict[int, tuple[int, int]]:
+        pos = {}
+        nrows = len(self._row_nodes)
+        for irow, row_nodes in enumerate(self._row_nodes):
+            for icol, node_id in row_nodes:
+                pos[node_id] = (0.5 * icol, np.sqrt(3) * (nrows - irow - 1))
+        return pos
 
     def _layout_node_matcher(
         self,
