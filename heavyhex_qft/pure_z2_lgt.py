@@ -1,5 +1,6 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from itertools import combinations, count
 from typing import Optional
 import numpy as np
@@ -10,6 +11,7 @@ from qiskit.transpiler import CouplingMap
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.providers.exceptions import BackendPropertyError
 from qiskit_ibm_runtime.models import BackendProperties
+from .utils import as_bitarray, to_pauli_string
 
 
 class PureZ2LGT(ABC):
@@ -57,8 +59,34 @@ class PureZ2LGT(ABC):
     def num_vertices(self) -> int:
         return self.graph.num_nodes()
 
-    def draw_graph(self) -> Figure:
-        return rx.visualization.mpl_draw(self.graph, with_labels=True, labels=str, edge_labels=str)
+    @property
+    def num_qubits(self) -> int:
+        return self.qubit_graph.num_nodes()
+
+    def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None) -> 'PlaquetteDual':
+        return PlaquetteDual(self, base_link_state=base_link_state)
+
+    def draw_graph(
+        self,
+        vertices: Optional[Sequence[int]] = None,
+        links: Optional[Sequence[int]] = None
+    ) -> Figure:
+        kwargs = {'labels': str, 'edge_labels': str}
+        if vertices is not None:
+            kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
+            if len(vertices) == self.num_vertices:
+                vertices = np.nonzero(vertices)[0]
+            for iv in vertices:
+                kwargs['node_color'][iv] = '#b41f1f'
+
+        if links is not None:
+            kwargs['edge_color'] = ['k'] * self.num_links
+            if len(links) == self.num_links:
+                links = np.nonzero(links)[0]
+            for il in links:
+                kwargs['edge_color'][il] = 'r'
+
+        return rx.visualization.mpl_draw(self.graph, with_labels=True, **kwargs)
 
     def draw_dual_graph(self) -> Figure:
         return rx.visualization.mpl_draw(self.dual_graph, with_labels=True, labels=str,
@@ -84,6 +112,11 @@ class PureZ2LGT(ABC):
         """Return the list of ids of the links surrounding the plaquette."""
         return list(self.dual_graph.incident_edges(plaq_id))
 
+    def link_plaquettes(self, link_id: int) -> list[int]:
+        """Return the list (size 1 or 2) of ids of the plaquettes that have the link as an edge."""
+        plaq_nodes = self.dual_graph.edge_index_map()[link_id][:2]
+        return [plaq_id for plaq_id in plaq_nodes if self.dual_graph[plaq_id] is not None]
+
     def vertex_links(self, vertex_id: int) -> list[int]:
         """Return the list of ids of the links incident on the vertex.
 
@@ -91,6 +124,10 @@ class PureZ2LGT(ABC):
         qubits in the coincident.
         """
         return list(self.graph.incident_edges(vertex_id))
+
+    def link_vertices(self, link_id: int) -> tuple[int, int]:
+        """Return the ids of the pair of vertices that the link connects."""
+        return self.graph.edge_index_map()[link_id][:2]
 
     def layout_heavy_hex(
         self,
@@ -195,30 +232,12 @@ class PureZ2LGT(ABC):
     ) -> bool:
         """Node matcher function for qubit mapping."""
 
-    def get_syndromes(self, bitstring: str) -> np.ndarray:
-        """Compute the bit-flip syndromes from a link measurement result."""
-        zevs = 1 - 2 * np.array(list(map(int, bitstring[::-1])), dtype=int)
-        return np.array([np.prod(zevs[self.vertex_links(iv)]) for iv in range(self.num_vertices)])
-
-    def to_pauli(self, link_ops: dict[int, str], pad_to_nq: bool = False) -> str:
-        """Form the Pauli string corresponding to the given link operators.
-
-        If pad_to_nq is True, returned string is padded with 'I's to align the length to the number
-        of qubits.
-        """
-        link_paulis = []
-        for link_id, op in link_ops.items():
-            link_paulis.append((link_id, op.upper()))
-
-        link_paulis = sorted(link_paulis, key=lambda x: x[0])
-        pauli = ''
-        for link, op in link_paulis:
-            pauli = op + ('I' * (link - len(pauli))) + pauli
-
-        pauli = 'I' * (self.num_links - len(pauli)) + pauli
-        if pad_to_nq:
-            pauli = 'I' * (self.qubit_graph.num_nodes() - self.num_links) + pauli
-        return pauli
+    def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
+        """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
+        measurement result."""
+        link_state = as_bitarray(link_state)
+        return np.array([np.sum(link_state[self.vertex_links(iv)]) % 2
+                         for iv in range(self.num_vertices)])
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Return the Z2 LGT Hamiltonian expressed as a SparsePauliOp.
@@ -226,11 +245,13 @@ class PureZ2LGT(ABC):
         The lengths of the Pauli strings equal the number of links in the lattice, not the number
         of qubits.
         """
-        link_terms = [self.to_pauli({lid: 'Z'}) for lid in self.graph.edge_indices()]
-        plaquette_terms = [self.to_pauli({lid: 'X' for lid in self.plaquette_links(plid)})
+        link_terms = [to_pauli_string({lid: 'Z'}, self.num_links)
+                      for lid in self.graph.edge_indices()]
+        plaquette_terms = [to_pauli_string({lid: 'X' for lid in self.plaquette_links(plid)},
+                                           self.num_links)
                            for plid in range(self.num_plaquettes)]
-        hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
-        hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
+        hamiltonian = SparsePauliOp(link_terms, [1.] * len(link_terms))
+        hamiltonian += SparsePauliOp(plaquette_terms, [plaquette_energy] * len(plaquette_terms))
         return hamiltonian
 
     def charge_subspace(self, vertex_charge: list[int]) -> np.ndarray:
@@ -304,3 +325,85 @@ class PureZ2LGT(ABC):
         basis_2q: str = 'cx'
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
+
+
+class PlaquetteDual:
+    """Dual lattice of 2d Z2 LGT."""
+    def __init__(self, primal: PureZ2LGT, base_link_state: Optional[np.ndarray] = None):
+        self._primal = primal
+        if base_link_state is None:
+            self._base_link_state = np.zeros(primal.num_links)
+        else:
+            self._base_link_state = np.array(base_link_state)
+
+    def map_link_state(self, link_state: np.ndarray | str) -> np.ndarray:
+        link_state = as_bitarray(link_state)
+        if np.max(link_state) > 1 or np.min(link_state) < 0:
+            raise ValueError('Non-binary link state')
+        if link_state.shape[0] != self._base_link_state.shape[0]:
+            raise ValueError('Number of links inconsistent with the primal graph')
+
+        # Excited links are those whose states differ from the base
+        excited_links = np.nonzero(link_state != self._base_link_state)[0]
+
+        # Cut the dual graph along excited links
+        dual_graph = self._primal.dual_graph.copy()
+        for link in excited_links:
+            dual_graph.remove_edge_from_index(link)
+        # Remove boundary links too
+        for link, edge_info in dual_graph.edge_index_map().items():
+            if None in [dual_graph[node] for node in edge_info[:2]]:
+                dual_graph.remove_edge_from_index(link)
+        patches = rx.connected_components(dual_graph)
+
+        # Next: Determine which patches are excited.
+        # Construct a new graph whose vertices are the patches
+        patch_graph = self._primal.dual_graph.copy()
+        edge_index_map = patch_graph.edge_index_map()
+        # Relabel boundary links
+        for link in excited_links:
+            if None in [patch_graph[node] for node in edge_index_map[link][:2]]:
+                patch_graph.update_edge_by_index(link, -edge_index_map[link][2] - 1)
+
+        for plaquettes in patches:
+            plaquettes = list(plaquettes)
+            if len(plaquettes) == 1 and patch_graph[plaquettes[0]] is None:
+                continue
+            patch_graph.contract_nodes(plaquettes, plaquettes)
+
+        # Apply a two-coloring and determine which of 0 or 1 corresponds to excitation
+        coloring = rx.two_color(patch_graph)
+        # Find a boundary plaquette
+        edge_index_map = patch_graph.edge_index_map()
+        p1, p2, weight = next(edge_info for edge_info in edge_index_map.values()
+                              if None in [patch_graph[node] for node in edge_info[:2]])
+        boundary = next(patch for patch in [p1, p2] if patch_graph[patch] is not None)
+        if weight > 0:
+            base_color = coloring[boundary]
+        else:
+            base_color = 1 - coloring[boundary]
+
+        # Finally compose the plaquette state
+        state = np.zeros(self._primal.num_plaquettes, dtype=int)
+        for patch in patch_graph.node_indices():
+            if coloring[patch] != base_color and (plaquettes := patch_graph[patch]) is not None:
+                state[plaquettes] = 1
+
+        return state
+
+    def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
+        """Construct the Hamiltonian in the plaquette basis."""
+        num_p = self._primal.num_plaquettes
+        paulis = []
+        for p1, p2, _ in self._primal.dual_graph.edge_index_map().values():
+            if self._primal.dual_graph[p1] is None:
+                paulis.append(to_pauli_string({p2: 'Z'}, num_p))
+            elif self._primal.dual_graph[p2] is None:
+                paulis.append(to_pauli_string({p1: 'Z'}, num_p))
+            else:
+                paulis.append(to_pauli_string({p1: 'Z', p2: 'Z'}, num_p))
+        coeffs = [1.] * len(paulis)
+        paulis += [to_pauli_string({p: 'X'}, num_p) for p in range(num_p)]
+        coeffs += [plaquette_energy] * num_p
+
+        return SparsePauliOp(paulis, coeffs)
