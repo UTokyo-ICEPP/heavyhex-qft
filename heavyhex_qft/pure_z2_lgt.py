@@ -109,52 +109,47 @@ class PureZ2LGT(ABC):
         ax: Optional[Axes] = None,
         **kwargs
     ) -> Figure:
-        # Node label function
-        def labels(payload):
-            if isinstance(payload, int):
-                return f'{payload}'
-            if payload[0] == 'link':
-                logical_qubit = payload[1]
-            else:
-                logical_qubit = payload[1] + self.num_links
-            return f'{layout[logical_qubit]}\n{payload[0][0]}:{payload[1]}'
+        cgraph = coupling_map.graph.to_undirected()
+        graph = rx.PyGraph(multigraph=False, node_count_hint=cgraph.num_nodes())
+        graph.add_nodes_from(cgraph.node_indices())
+        for source, target in cgraph.edge_list():
+            graph.add_edge(source, target, None)
 
-        kwargs['labels'] = labels
+        node_color = [None] * graph.num_nodes()
+        for lidx in range(self.num_links):
+            physical_qubit = layout[lidx]
+            graph[physical_qubit] = f'{physical_qubit}\nL:{lidx}'
+            node_color[physical_qubit] = '#cc8811'
+        for pidx in range(self.num_plaquettes):
+            physical_qubit = layout[pidx + self.num_links]
+            graph[physical_qubit] = f'{physical_qubit}\nP:{pidx}'
+            node_color[physical_qubit] = '#88cc11'
+        for physical_qubit in set(coupling_map.physical_qubits) - set(layout):
+            graph[physical_qubit] = f'{physical_qubit}'
+            node_color[physical_qubit] = '#888888'
 
-        # Compute the node coordinates
-        coords = qubit_coordinates(coupling_map)
-        pos = {}
-        for nidx in self.qubit_graph.node_indices():
-            payload = self.qubit_graph.get_node_data(nidx)
-            if payload[0] == 'link':
-                logical_qubit = payload[1]
-            else:
-                logical_qubit = payload[1] + self.num_links
-            row, col = coords[layout[logical_qubit]]
-            pos[nidx] = (col, row)
+        pos = {iq: (col, row) for iq, (row, col) in enumerate(qubit_coordinates(coupling_map))}
 
         kwargs['pos'] = pos
-
         if 'node_size' not in kwargs:
             kwargs['node_size'] = 160
         if 'node_color' not in kwargs:
-            kwargs['node_color'] = (['#cc8811'] * self.num_links
-                                    + ['#88cc11'] * self.num_plaquettes)
+            kwargs['node_color'] = node_color
         if 'font_size' not in kwargs:
             kwargs['font_size'] = 8
 
-        fig = rx.visualization.mpl_draw(self.qubit_graph, ax=ax, with_labels=True, **kwargs)
+        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, labels=str, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
         # overwritten in the function
         if fig is None:
             fig = plt.gcf()
         # Add link drawings
-        self._draw_qubit_graph_links(layout, coupling_map, pos, ax=ax or fig.axes[0])
+        self._draw_qubit_graph_links(graph, layout, pos, ax=ax or fig.axes[0])
 
         if not plt.isinteractive() or ax is None:
             return fig
 
-    def _draw_qubit_graph_links(self, layout, coupling_map, pos, ax):
+    def _draw_qubit_graph_links(self, graph, layout, pos, ax):
         """Draw links on the qubit graph plot."""
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
