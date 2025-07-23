@@ -7,11 +7,11 @@ from typing import Optional
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
+import matplotlib.pyplot as plt
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap
 from qiskit.quantum_info import SparsePauliOp
-from qiskit.providers import Backend
 from qiskit_ibm_runtime.models import BackendProperties
 from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
 from .utils import as_bitarray, to_pauli_string, qubit_coordinates
@@ -104,42 +104,58 @@ class PureZ2LGT(ABC):
 
     def draw_qubit_graph(
         self,
-        layout: Optional[list[int]] = None,
-        coupling_map: Optional[Backend] = None,
-        ax: Optional[Axes] = None
+        layout: list[int],
+        coupling_map: CouplingMap,
+        ax: Optional[Axes] = None,
+        **kwargs
     ) -> Figure:
-        kwargs = {
-            'node_size': 200,
-            'node_color': ['#cc8811'] * self.num_links + ['#88cc11'] * self.num_plaquettes
-        }
-
-        if layout is not None:
-            def labels(payload):
-                if payload[0] == 'link':
-                    logical_qubit = payload[1]
-                else:
-                    logical_qubit = payload[1] + self.num_links
-                return f'{layout[logical_qubit]}\n{payload[0][0]}:{payload[1]}'
-
-            if coupling_map is not None:
-                coords = qubit_coordinates(coupling_map)
-                pos = {}
-                for nidx in self.qubit_graph.node_indices():
-                    payload = self.qubit_graph.get_node_data(nidx)
-                    if payload[0] == 'link':
-                        logical_qubit = payload[1]
-                    else:
-                        logical_qubit = payload[1] + self.num_links
-                    row, col = coords[layout[logical_qubit]]
-                    pos[nidx] = (col, row)
-
-                kwargs['pos'] = pos
-        else:
-            labels = str
+        # Node label function
+        def labels(payload):
+            if isinstance(payload, int):
+                return f'{payload}'
+            if payload[0] == 'link':
+                logical_qubit = payload[1]
+            else:
+                logical_qubit = payload[1] + self.num_links
+            return f'{layout[logical_qubit]}\n{payload[0][0]}:{payload[1]}'
 
         kwargs['labels'] = labels
 
-        return rx.visualization.mpl_draw(self.qubit_graph, ax=ax, with_labels=True, **kwargs)
+        # Compute the node coordinates
+        coords = qubit_coordinates(coupling_map)
+        pos = {}
+        for nidx in self.qubit_graph.node_indices():
+            payload = self.qubit_graph.get_node_data(nidx)
+            if payload[0] == 'link':
+                logical_qubit = payload[1]
+            else:
+                logical_qubit = payload[1] + self.num_links
+            row, col = coords[layout[logical_qubit]]
+            pos[nidx] = (col, row)
+
+        kwargs['pos'] = pos
+
+        if 'node_size' not in kwargs:
+            kwargs['node_size'] = 160
+        if 'node_color' not in kwargs:
+            kwargs['node_color'] = (['#cc8811'] * self.num_links
+                                    + ['#88cc11'] * self.num_plaquettes)
+        if 'font_size' not in kwargs:
+            kwargs['font_size'] = 8
+
+        fig = rx.visualization.mpl_draw(self.qubit_graph, ax=ax, with_labels=True, **kwargs)
+        # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
+        # overwritten in the function
+        if fig is None:
+            fig = plt.gcf()
+        # Add link drawings
+        self._draw_qubit_graph_links(layout, coupling_map, pos, ax=ax or fig.axes[0])
+
+        if not plt.isinteractive() or ax is None:
+            return fig
+
+    def _draw_qubit_graph_links(self, layout, coupling_map, pos, ax):
+        """Draw links on the qubit graph plot."""
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of ids of the links surrounding the plaquette."""
