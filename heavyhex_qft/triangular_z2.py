@@ -139,7 +139,8 @@ class TriangularZ2Lattice(PureZ2LGT):
                 pos[node_id] = (0.5 * icol, np.sqrt(3) * (nrows - irow - 1))
         return pos
 
-    def _draw_qubit_graph_links(self, graph, layout, pos, ax):
+    def _draw_qubit_graph_links(self, graph, layout, pos, selected_links, ax):
+        layout_r = {qubit: link for link, qubit in enumerate(layout[:self.num_links])}
         plotted_qubits = set()
         for pidx in range(self.num_plaquettes):
             qp = layout[self.num_links + pidx]
@@ -155,9 +156,11 @@ class TriangularZ2Lattice(PureZ2LGT):
             for iq, dx, slope in [(qh, 2, 0), (qp - 1, 1, left_slope), (qp + 1, 1, right_slope)]:
                 if iq in neighbors and iq not in plotted_qubits:
                     plotted_qubits.add(iq)
+                    link = layout_r[iq]
+                    color = '#ff11ff' if link in selected_links else '#881188'
                     x, y = pos[iq]
                     ax.plot([x - dx, x + dx], [y - slope * 1, y + slope * 1],
-                            linewidth=1, linestyle='solid', marker='none', color='#1188cc')
+                            linewidth=1, linestyle='solid', marker='none', color=color)
 
     def _layout_node_matcher(
         self,

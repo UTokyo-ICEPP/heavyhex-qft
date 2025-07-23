@@ -107,6 +107,9 @@ class PureZ2LGT(ABC):
         layout: list[int],
         coupling_map: CouplingMap,
         ax: Optional[Axes] = None,
+        links: Optional[Sequence[int]] = None,
+        plaquettes: Optional[Sequence[int]] = None,
+        qubits: Optional[Sequence[int]] = None,
         **kwargs
     ) -> Figure:
         cgraph = coupling_map.graph.to_undirected()
@@ -115,18 +118,42 @@ class PureZ2LGT(ABC):
         for source, target in cgraph.edge_list():
             graph.add_edge(source, target, None)
 
+        selected_links = set(links or [])
+        selected_plaquettes = set(plaquettes or [])
+        selected_qubits = set()
+        if qubits:
+            for qubit in qubits:
+                try:
+                    logical_qubit = layout.index(qubit)
+                except IndexError:
+                    selected_qubits.add(qubit)
+                else:
+                    if logical_qubit < self.num_links:
+                        selected_links.add(logical_qubit)
+                    else:
+                        selected_plaquettes.add(logical_qubit - self.num_links)
+
         node_color = [None] * graph.num_nodes()
         for lidx in range(self.num_links):
             physical_qubit = layout[lidx]
             graph[physical_qubit] = f'{physical_qubit}\nL:{lidx}'
-            node_color[physical_qubit] = '#cc8811'
+            if lidx in selected_links:
+                node_color[physical_qubit] = '#ffaaff'
+            else:
+                node_color[physical_qubit] = '#cc11cc'
         for pidx in range(self.num_plaquettes):
             physical_qubit = layout[pidx + self.num_links]
             graph[physical_qubit] = f'{physical_qubit}\nP:{pidx}'
-            node_color[physical_qubit] = '#88cc11'
+            if pidx in selected_plaquettes:
+                node_color[physical_qubit] = '#aaffff'
+            else:
+                node_color[physical_qubit] = '#11cccc'
         for physical_qubit in set(coupling_map.physical_qubits) - set(layout):
             graph[physical_qubit] = f'{physical_qubit}'
-            node_color[physical_qubit] = '#888888'
+            if physical_qubit in selected_qubits:
+                node_color[physical_qubit] = '#cccccc'
+            else:
+                node_color[physical_qubit] = '#888888'
 
         pos = {iq: (col, row) for iq, (row, col) in enumerate(qubit_coordinates(coupling_map))}
 
@@ -144,12 +171,12 @@ class PureZ2LGT(ABC):
         if fig is None:
             fig = plt.gcf()
         # Add link drawings
-        self._draw_qubit_graph_links(graph, layout, pos, ax=ax or fig.axes[0])
+        self._draw_qubit_graph_links(graph, layout, pos, selected_links, ax or fig.axes[0])
 
         if not plt.isinteractive() or ax is None:
             return fig
 
-    def _draw_qubit_graph_links(self, graph, layout, pos, ax):
+    def _draw_qubit_graph_links(self, graph, layout, pos, selected_links, ax):
         """Draw links on the qubit graph plot."""
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
