@@ -67,6 +67,7 @@ class PureZ2LGT(ABC):
         return self.qubit_graph.num_nodes()
 
     def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None):
+        # pylint: disable-next=import-outside-toplevel
         from .plaquette_dual import PlaquetteDual
         return PlaquetteDual(self, base_link_state=base_link_state)
 

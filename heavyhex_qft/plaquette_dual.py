@@ -16,6 +16,10 @@ class PlaquetteDual:
         else:
             self._base_link_state = np.array(base_link_state)
 
+    @property
+    def num_plaquettes(self) -> int:
+        return self._primal.num_plaquettes
+
     def map_link_state(self, link_state: np.ndarray | str) -> np.ndarray:
         link_state = as_bitarray(link_state)
         if np.max(link_state) > 1 or np.min(link_state) < 0:
@@ -71,9 +75,19 @@ class PlaquetteDual:
 
         return state
 
+    def link_statevector_indices(self) -> np.ndarray:
+        """Return the indices of the link state vector."""
+        num_p = self.num_plaquettes
+        plaquette_links = np.array([self._primal.plaquette_links(ip) for ip in range(num_p)])
+        link_bits = np.sum(1 << plaquette_links, axis=1)
+        bin_indices = (np.arange(2 ** num_p)[:, None] >> np.arange(num_p)[None, :]) % 2
+        link_indices = np.bitwise_xor.reduce(bin_indices * link_bits, axis=1)
+        link_indices ^= np.sum(1 << self._base_link_state)
+        return link_indices
+
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Construct the Hamiltonian in the plaquette basis."""
-        num_p = self._primal.num_plaquettes
+        num_p = self.num_plaquettes
         paulis = []
         for p1, p2, _ in self._primal.dual_graph.edge_index_map().values():
             if self._primal.dual_graph[p1] is None:
