@@ -378,7 +378,13 @@ class PureZ2LGT(ABC):
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.rz(-2. * time, range(self.num_links))
+        circuit.rz(2. * time, range(self.num_links))
+        return circuit
+
+    def electric_clifford(self) -> QuantumCircuit:
+        """Construct the electric term circuit at delta_t = pi/4."""
+        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
+        circuit.s(range(self.num_links))
         return circuit
 
     @abstractmethod
@@ -389,6 +395,10 @@ class PureZ2LGT(ABC):
         basis_2q: str = 'cx'
     ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
+
+    @abstractmethod
+    def magnetic_clifford(self) -> QuantumCircuit:
+        """Construct the magnetic term circuit at K*delta_t = pi/4."""
 
     @abstractmethod
     def magnetic_2q_gate_counts(
@@ -478,3 +488,21 @@ class PlaquetteDual:
         coeffs += [plaquette_energy] * num_p
 
         return SparsePauliOp(paulis, coeffs)
+
+    def electric_evolution(self, time: float) -> QuantumCircuit:
+        """Construct the Trotter evolution circuit of the electric term."""
+        circuit = QuantumCircuit(self._primal.num_plaquettes)
+        for p1, p2, _ in self._primal.dual_graph.edge_index_map().values():
+            if self._primal.dual_graph[p1] is None:
+                circuit.rz(2. * time, p2)
+            elif self._primal.dual_graph[p2] is None:
+                circuit.rz(2. * time, p1)
+            else:
+                circuit.rzz(2. * time, p1, p2)
+        return circuit
+
+    def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
+        """Construct the Trotter evolution circuit of the magnetic term."""
+        circuit = QuantumCircuit(self._primal.num_plaquettes)
+        circuit.rx(2. * plaquette_energy * time, range(self._primal.num_plaquettes))
+        return circuit

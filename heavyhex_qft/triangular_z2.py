@@ -2,6 +2,7 @@
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from collections import defaultdict
 from itertools import count
+from numbers import Number
 import re
 import numpy as np
 import rustworkx as rx
@@ -200,7 +201,19 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Plaquette qubit ids
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
         # Rzzz rotation angle
-        angle = (-2. * plaquette_energy * time + np.pi) % (2. * np.pi) - np.pi
+        angle = 2. * plaquette_energy * time
+        if isinstance(angle, Number):
+            angle = (angle + np.pi) % (2. * np.pi) - np.pi
+            abs_angle = abs(angle)
+            sign_angle = np.sign(angle)
+            if basis_2q == 'rzz' and abs_angle > np.pi / 2.:
+                raise ValueError(
+                    f'Rzz angle {angle} is too large for the Rzz gate; use basis_2q="cx" or "cz"'
+                )
+        else:
+            abs_angle = angle
+            sign_angle = 1.
+
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
         if basis_2q == 'cx':
@@ -211,7 +224,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             circuit.cx(plaquette_links[:, 2], qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
             circuit.cx(plaquette_links[:, 0], qpl)
-        elif basis_2q == 'cz' or (basis_2q == 'rzz' and abs(angle) > np.pi / 2.):
+        elif basis_2q == 'cz':
             circuit.h(qpl)
             circuit.cz(plaquette_links[:, 0], qpl)
             circuit.cz(plaquette_links[:, 1], qpl)
@@ -221,17 +234,35 @@ class TriangularZ2Lattice(PureZ2LGT):
             circuit.cz(plaquette_links[:, 1], qpl)
             circuit.cz(plaquette_links[:, 0], qpl)
             circuit.h(qpl)
-        elif basis_2q == 'rzz':
+        else:
             circuit.cx(plaquette_links[:, 0], qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
-            if angle < 0.:
+            if sign_angle < 0.:
                 # Continuous Rzz accepts positive arguments only; sandwitch with Xs to reverse sign
                 circuit.x(qpl)
-            circuit.rzz(abs(angle), plaquette_links[:, 2], qpl)
-            if angle < 0.:
+            circuit.rzz(abs_angle, plaquette_links[:, 2], qpl)
+            if sign_angle < 0.:
                 circuit.x(qpl)
             circuit.cx(plaquette_links[:, 1], qpl)
             circuit.cx(plaquette_links[:, 0], qpl)
+        circuit.h(range(self.num_links))
+        return circuit
+
+    def magnetic_clifford(self) -> QuantumCircuit:
+        """Construct the magnetic term circuit at K*delta_t = pi/4."""
+        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
+        plaquette_links = self._plaquette_links()
+        # Plaquette qubit ids
+        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        # Rzzz circuit sandwitched by Hadamards on all links
+        circuit.h(range(self.num_links))
+        circuit.cx(plaquette_links[:, 0], qpl)
+        circuit.cx(plaquette_links[:, 1], qpl)
+        circuit.cx(plaquette_links[:, 2], qpl)
+        circuit.s(qpl)
+        circuit.cx(plaquette_links[:, 2], qpl)
+        circuit.cx(plaquette_links[:, 1], qpl)
+        circuit.cx(plaquette_links[:, 0], qpl)
         circuit.h(range(self.num_links))
         return circuit
 
