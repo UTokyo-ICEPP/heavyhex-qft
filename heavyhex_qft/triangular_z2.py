@@ -201,7 +201,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         # Plaquette qubit ids
         qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
         # Rzzz rotation angle
-        angle = 2. * plaquette_energy * time
+        angle = -2. * plaquette_energy * time
         if isinstance(angle, Number):
             angle = (angle + np.pi) % (2. * np.pi) - np.pi
             abs_angle = abs(angle)
@@ -212,7 +212,7 @@ class TriangularZ2Lattice(PureZ2LGT):
                 )
         else:
             abs_angle = angle
-            sign_angle = 1.
+            sign_angle = -1.
 
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
@@ -259,7 +259,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         circuit.cx(plaquette_links[:, 0], qpl)
         circuit.cx(plaquette_links[:, 1], qpl)
         circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.s(qpl)
+        circuit.sdg(qpl)
         circuit.cx(plaquette_links[:, 2], qpl)
         circuit.cx(plaquette_links[:, 1], qpl)
         circuit.cx(plaquette_links[:, 0], qpl)

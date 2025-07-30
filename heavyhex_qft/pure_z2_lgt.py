@@ -323,8 +323,8 @@ class PureZ2LGT(ABC):
         plaquette_terms = [to_pauli_string({lid: 'X' for lid in self.plaquette_links(plid)},
                                            self.num_links)
                            for plid in range(self.num_plaquettes)]
-        hamiltonian = SparsePauliOp(link_terms, [1.] * len(link_terms))
-        hamiltonian += SparsePauliOp(plaquette_terms, [plaquette_energy] * len(plaquette_terms))
+        hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
+        hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
         return hamiltonian
 
     def charge_subspace(self, vertex_charge: list[int]) -> np.ndarray:
@@ -380,13 +380,13 @@ class PureZ2LGT(ABC):
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.rz(2. * time, range(self.num_links))
+        circuit.rz(-2. * time, range(self.num_links))
         return circuit
 
     def electric_clifford(self) -> QuantumCircuit:
         """Construct the electric term circuit at delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.s(range(self.num_links))
+        circuit.sdg(range(self.num_links))
         return circuit
 
     @abstractmethod
