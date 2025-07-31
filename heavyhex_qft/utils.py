@@ -1,32 +1,6 @@
 """Miscellaneous utility functions."""
 import numpy as np
-from scipy.sparse import coo_array
-from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler import CouplingMap
-try:
-    from qiskit_addon_sqd.qubit import matrix_elements_from_pauli
-except ImportError:
-    matrix_elements_from_pauli = None
-
-
-def subspace_projection(op: SparsePauliOp, indices: np.ndarray) -> np.ndarray:
-    if len(indices.shape) != 1:
-        raise ValueError('Subspace projection indices must be a 1D array')
-
-    if op.num_qubits < 32:
-        return np.asarray(op.to_matrix(sparse=True)[indices[:, None], indices[None, :]].todense())
-
-    if not matrix_elements_from_pauli:
-        raise RuntimeError('Install qiskit-addon-sqd')
-
-    shape = (op.num_qubits,) * 2
-    mat = coo_array(shape, dtype=np.complex128)
-    bitstring_matrix = ((indices[:, None] >> np.arange(op.num_qubits)[None, ::-1]) % 2).astype(bool)
-    for pauli, coeff in zip(op.paulis, op.coeffs):
-        data, row, col = matrix_elements_from_pauli(bitstring_matrix, pauli)
-        mat += coo_array((coeff * data, (row, col)), shape)
-
-    return mat
 
 
 def as_bitarray(bitstr: str | np.ndarray):
