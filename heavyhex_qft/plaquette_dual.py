@@ -96,9 +96,9 @@ class PlaquetteDual:
                 paulis.append(to_pauli_string({p1: 'Z'}, num_p))
             else:
                 paulis.append(to_pauli_string({p1: 'Z', p2: 'Z'}, num_p))
-        coeffs = [1.] * len(paulis)
+        coeffs = [-1.] * len(paulis)
         paulis += [to_pauli_string({p: 'X'}, num_p) for p in range(num_p)]
-        coeffs += [plaquette_energy] * num_p
+        coeffs += [-plaquette_energy] * num_p
 
         return SparsePauliOp(paulis, coeffs)
 
@@ -107,15 +107,15 @@ class PlaquetteDual:
         circuit = QuantumCircuit(self._primal.num_plaquettes)
         for p1, p2, _ in self._primal.dual_graph.edge_index_map().values():
             if self._primal.dual_graph[p1] is None:
-                circuit.rz(2. * time, p2)
+                circuit.rz(-2. * time, p2)
             elif self._primal.dual_graph[p2] is None:
-                circuit.rz(2. * time, p1)
+                circuit.rz(-2. * time, p1)
             else:
-                circuit.rzz(2. * time, p1, p2)
+                circuit.rzz(-2. * time, p1, p2)
         return circuit
 
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
         circuit = QuantumCircuit(self._primal.num_plaquettes)
-        circuit.rx(2. * plaquette_energy * time, range(self._primal.num_plaquettes))
+        circuit.rx(-2. * plaquette_energy * time, range(self._primal.num_plaquettes))
         return circuit
