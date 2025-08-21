@@ -66,6 +66,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             last_column -= 1
         config_rows = [row[:last_column] for row in config_rows]
         config_rows = [row + (' ' * (last_column - len(row))) for row in config_rows]
+        self.configuration = '\n'.join(config_rows)
 
         if any(re.search('[*^v][*^v]', row) for row in config_rows):
             raise ValueError('Adjacent vertices')
