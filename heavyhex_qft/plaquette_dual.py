@@ -44,11 +44,12 @@ class PlaquetteDual:
         # Construct a new graph whose vertices are the patches
         patch_graph = self._primal.dual_graph.copy()
         edge_index_map = patch_graph.edge_index_map()
-        # Relabel boundary links
+        # Relabel excited boundary links to have negative payloads
         for link in excited_links:
             if None in [patch_graph[node] for node in edge_index_map[link][:2]]:
                 patch_graph.update_edge_by_index(link, -edge_index_map[link][2] - 1)
 
+        # Contract the patches
         for plaquettes in patches:
             plaquettes = list(plaquettes)
             if len(plaquettes) == 1 and patch_graph[plaquettes[0]] is None:
@@ -62,7 +63,9 @@ class PlaquetteDual:
         p1, p2, weight = next(edge_info for edge_info in edge_index_map.values()
                               if None in [patch_graph[node] for node in edge_info[:2]])
         boundary = next(patch for patch in [p1, p2] if patch_graph[patch] is not None)
-        if weight > 0:
+        # The boundary patch is excited if the weight of the edge connecting it to the periphery is
+        # negative
+        if weight >= 0:
             base_color = coloring[boundary]
         else:
             base_color = 1 - coloring[boundary]
