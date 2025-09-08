@@ -47,7 +47,7 @@ class TriangularZ2Lattice(PureZ2LGT):
     def __init__(self, configuration: str):
         # Sanitize the configuration string
         config_rows = configuration.split('\n')
-        if any(re.search('[^ *^v]', row) for row in config_rows):
+        if any(re.search('[^ -*^v>]', row) for row in config_rows):
             raise ValueError('Lattice constructor argument contains invalid character(s)')
         first_row = 0
         while not config_rows[first_row].strip():
@@ -68,13 +68,13 @@ class TriangularZ2Lattice(PureZ2LGT):
         config_rows = [row + (' ' * (last_column - len(row))) for row in config_rows]
         self.configuration = '\n'.join(config_rows)
 
-        if any(re.search('[*^v][*^v]', row) for row in config_rows):
+        if any(re.search('[*^v>][*^v>]', row) for row in config_rows):
             raise ValueError('Adjacent vertices')
         for upper, lower in zip(config_rows[:-1], config_rows[1:]):
-            if any(u != ' ' and l != ' ' for u, l in zip(upper, lower)):
+            if any(u not in ' -' and l not in ' -' for u, l in zip(upper, lower)):
                 raise ValueError('Lattice rows not staggered')
 
-        super().__init__(len(re.findall('[*^v]', configuration)))
+        super().__init__(len(re.findall('[*^v>]', configuration)))
 
         # Construct the lattice graph (nodes=vertices, edges=links)
         node_id_gen = iter(self.graph.node_indices())
@@ -83,7 +83,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         for row in config_rows:
             row_nodes = []
             for icol, char in enumerate(row):
-                if char != ' ':
+                if char in '*^v>':
                     row_nodes.append((icol, next(node_id_gen)))
                 if char == '*' and icol > 1 and row[icol - 2] == '*':
                     self.graph.add_edge(row_nodes[-2][1], row_nodes[-1][1], next(edge_id_gen))
@@ -99,6 +99,8 @@ class TriangularZ2Lattice(PureZ2LGT):
             for inode1, inode2 in zip(overlaid[:-1], overlaid[1:]):
                 if inode1 is not None and inode2 is not None:
                     self.graph.add_edge(inode1, inode2, next(edge_id_gen))
+
+        # TODO SAVE PLAQUETTE TYPE FROM - and >
 
         # Construct the qubit mapping graph (nodes=links and plaquettes, edges=qubit connectivity)
         self.qubit_graph.add_nodes_from([('link', idx) for idx in self.graph.edge_indices()])
@@ -117,6 +119,8 @@ class TriangularZ2Lattice(PureZ2LGT):
                     plaquette[inode], plaquette[(inode + 1) % 3]
                 )[0]
                 self.qubit_graph.add_edge(link_id, plaq_node_id, None)
+
+                # TODO add edge differently for no-ancilla plaquettes
 
         # Construct the dual graph
         self.dual_graph.add_nodes_from(range(len(plaquettes)))
