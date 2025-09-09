@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from itertools import combinations, count
-from typing import Optional
+from typing import Any, Optional
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -41,18 +41,17 @@ class PureZ2LGT(ABC):
     ancillas should have L+A+P nodes, with the first L representing the links, next A representing
     the ancillas, and the last P as the plaquettes.
     """
-    def __init__(self, num_vertices: int):
-        self.graph = rx.PyGraph()
-        self.graph.add_nodes_from(range(num_vertices))
-        self.dual_graph = rx.PyGraph()
-        self.qubit_graph = rx.PyGraph()
+    def __init__(self, graph: rx.PyGraph, dual_graph: rx.PyGraph, qubit_graph: rx.PyGraph):
+        self.graph = graph
+        self.dual_graph = dual_graph
+        self.qubit_graph = qubit_graph
 
         # Cached vertex parity
         self._vertex_parity = None
 
     @property
     def num_plaquettes(self) -> int:
-        return len(self.dual_graph.filter_nodes(lambda d: d is not None))
+        return len(self.dual_graph.filter_nodes(lambda d: None not in d))
 
     @property
     def num_links(self) -> int:
@@ -77,7 +76,8 @@ class PureZ2LGT(ABC):
         links: Optional[Sequence[int]] = None,
         ax: Optional[Axes] = None
     ) -> Figure:
-        kwargs = {'labels': str, 'edge_labels': str}
+        kwargs = {'labels': str, 'edge_labels': str,
+                  'pos': {nid: self.graph[nid] for nid in self.graph.node_indices()}}
         if vertices is not None:
             kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
             if len(vertices) == self.num_vertices:
@@ -92,17 +92,69 @@ class PureZ2LGT(ABC):
             for il in links:
                 kwargs['edge_color'][il] = 'r'
 
-        if (pos := self._graph_node_pos()) is not None:
-            kwargs['pos'] = pos
+        graph = rx.PyGraph()
+        graph.add_nodes_from(range(self.graph.num_nodes()))
+        for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
+            graph.add_edge(n1, n2, link_id)
 
-        return rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
+        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
+        # overwritten in the function
+        if fig is None:
+            fig = plt.gcf()
 
-    def _graph_node_pos(self) -> dict[int, tuple[float, float]] | None:
-        return None
+        # Draw the plaquette ids
+        for plaq_id in self.dual_graph.node_indices():
+            plaq_nodes = self.dual_graph[plaq_id]
+            if None in plaq_nodes:
+                continue
+            x, y = np.mean([np.array(self.graph[node]) for node in plaq_nodes], axis=0).tolist()
+            fig.axes[0].text(x, y, f'{plaq_id}', ha='center', va='center')
+
+        if not plt.isinteractive() or ax is None:
+            return fig
 
     def draw_dual_graph(self, ax: Optional[Axes] = None) -> Figure:
-        return rx.visualization.mpl_draw(self.dual_graph, ax=ax, with_labels=True, labels=str,
-                                         edge_labels=str)
+        kwargs = {'labels': str, 'edge_labels': str, 'pos': {}}
+        for plaq_id in self.dual_graph.node_indices():
+            plaq_nodes = self.dual_graph[plaq_id]
+            # Compute the mean of the node positions
+            if None in plaq_nodes:
+                pos = np.mean(
+                    [np.array(self.graph[node]) for node in plaq_nodes if node is not None],
+                    axis=0
+                )
+                neighbor_id = self.dual_graph.neighbors(plaq_id)[0]
+                neighbor_pos = np.mean([np.array(self.graph[node])
+                                        for node in self.dual_graph[neighbor_id]],
+                                       axis=0)
+                pos += pos - neighbor_pos
+                pos = tuple(pos.tolist())
+            else:
+                pos = tuple(
+                    np.mean([np.array(self.graph[node]) for node in plaq_nodes], axis=0).tolist()
+                )
+            kwargs['pos'][plaq_id] = pos
+
+        graph = rx.PyGraph()
+        graph.add_nodes_from(range(self.num_plaquettes))
+        graph.add_nodes_from([''] * (self.dual_graph.num_nodes() - self.num_plaquettes))
+        for n1, n2, link_id in self.dual_graph.edge_index_map().values():
+            graph.add_edge(n1, n2, link_id)
+
+        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
+        # overwritten in the function
+        if fig is None:
+            fig = plt.gcf()
+
+        # Draw the vertex ids
+        for vert_id in self.graph.node_indices():
+            x, y = self.graph[vert_id]
+            fig.axes[0].text(x, y, f'{vert_id}', ha='center', va='center')
+
+        if not plt.isinteractive() or ax is None:
+            return fig
 
     def draw_qubit_graph(
         self,
@@ -111,7 +163,7 @@ class PureZ2LGT(ABC):
         ax: Optional[Axes] = None,
         links: Optional[Sequence[int]] = None,
         plaquettes: Optional[Sequence[int]] = None,
-        qubits: Optional[Sequence[int]] = None,
+        physical_qubits: Optional[Sequence[int]] = None,
         **kwargs
     ) -> Figure:
         cgraph = coupling_map.graph.to_undirected()
@@ -122,34 +174,25 @@ class PureZ2LGT(ABC):
 
         selected_links = set(links or [])
         selected_plaquettes = set(plaquettes or [])
-        selected_qubits = set()
-        if qubits:
-            for qubit in qubits:
-                try:
-                    logical_qubit = layout.index(qubit)
-                except IndexError:
-                    selected_qubits.add(qubit)
-                else:
-                    if logical_qubit < self.num_links:
-                        selected_links.add(logical_qubit)
-                    else:
-                        selected_plaquettes.add(logical_qubit - self.num_links)
+        selected_qubits = set(physical_qubits or [])
 
         node_color = [None] * graph.num_nodes()
-        for lidx in range(self.num_links):
-            physical_qubit = layout[lidx]
-            graph[physical_qubit] = f'{physical_qubit}\nL:{lidx}'
-            if lidx in selected_links:
-                node_color[physical_qubit] = '#ffaaff'
-            else:
-                node_color[physical_qubit] = '#cc11cc'
-        for pidx in range(self.num_plaquettes):
-            physical_qubit = layout[pidx + self.num_links]
-            graph[physical_qubit] = f'{physical_qubit}\nP:{pidx}'
-            if pidx in selected_plaquettes:
-                node_color[physical_qubit] = '#aaffff'
-            else:
-                node_color[physical_qubit] = '#11cccc'
+        for logical_qubit in self.qubit_graph.node_indices():
+            physical_qubit = layout[logical_qubit]
+            node_type, obj_id = self.qubit_graph[logical_qubit]
+            if node_type == 'link':
+                graph[physical_qubit] = f'{physical_qubit}\nL:{obj_id}'
+                if obj_id in selected_links:
+                    node_color[physical_qubit] = '#ffaaff'
+                else:
+                    node_color[physical_qubit] = '#cc11cc'
+            elif node_type == 'plaq':
+                graph[physical_qubit] = f'{physical_qubit}\nP:{obj_id}'
+                if obj_id in selected_plaquettes:
+                    node_color[physical_qubit] = '#aaffff'
+                else:
+                    node_color[physical_qubit] = '#11cccc'
+
         for physical_qubit in set(coupling_map.physical_qubits) - set(layout):
             graph[physical_qubit] = f'{physical_qubit}'
             if physical_qubit in selected_qubits:
@@ -408,3 +451,15 @@ class PureZ2LGT(ABC):
         basis_2q: str = 'cx'
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
+
+
+def payload_matches(value: Any):
+    def match(payload):
+        return payload == value
+    return match
+
+
+def payload_contains(values: Any):
+    def contains(payload):
+        return all(value in payload for value in values)
+    return contains

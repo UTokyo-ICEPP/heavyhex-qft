@@ -1,13 +1,12 @@
-# pylint: disable=unused-argument
+# pylint: disable=unused-argument, no-member
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from collections import defaultdict
-from itertools import count
 from numbers import Number
 import re
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from .pure_z2_lgt import PureZ2LGT
+from .pure_z2_lgt import PureZ2LGT, payload_matches, payload_contains
 
 
 class TriangularZ2Lattice(PureZ2LGT):
@@ -45,124 +44,26 @@ class TriangularZ2Lattice(PureZ2LGT):
             ''')
     """
     def __init__(self, configuration: str):
-        # Sanitize the configuration string
-        config_rows = configuration.split('\n')
-        if any(re.search('[^ *^v]', row) for row in config_rows):
-            raise ValueError('Lattice constructor argument contains invalid character(s)')
-        first_row = 0
-        while not config_rows[first_row].strip():
-            first_row += 1
-        config_rows = config_rows[first_row:]
-        last_row = len(config_rows)
-        while not config_rows[last_row - 1].strip():
-            last_row -= 1
-        config_rows = config_rows[:last_row]
-        first_column = 0
-        while all(not row[first_column] for row in config_rows):
-            first_column += 1
-        config_rows = [row[first_column:] for row in config_rows]
-        last_column = max(len(row) for row in config_rows)
-        while all(len(row) < last_column or not row[last_column - 1] for row in config_rows):
-            last_column -= 1
-        config_rows = [row[:last_column] for row in config_rows]
-        config_rows = [row + (' ' * (last_column - len(row))) for row in config_rows]
-        self.configuration = '\n'.join(config_rows)
-
-        if any(re.search('[*^v][*^v]', row) for row in config_rows):
-            raise ValueError('Adjacent vertices')
-        for upper, lower in zip(config_rows[:-1], config_rows[1:]):
-            if any(u != ' ' and l != ' ' for u, l in zip(upper, lower)):
-                raise ValueError('Lattice rows not staggered')
-
-        super().__init__(len(re.findall('[*^v]', configuration)))
-
-        # Construct the lattice graph (nodes=vertices, edges=links)
-        node_id_gen = iter(self.graph.node_indices())
-        edge_id_gen = iter(count())
-        self._row_nodes = []
-        for row in config_rows:
-            row_nodes = []
-            for icol, char in enumerate(row):
-                if char != ' ':
-                    row_nodes.append((icol, next(node_id_gen)))
-                if char == '*' and icol > 1 and row[icol - 2] == '*':
-                    self.graph.add_edge(row_nodes[-2][1], row_nodes[-1][1], next(edge_id_gen))
-            self._row_nodes.append(row_nodes)
-
-        for iupper, ilower in zip(range(len(config_rows) - 1), range(1, len(config_rows))):
-            # Overlay the two rows - staggering is guaranteed above
-            overlaid = [None] * last_column
-            for icol, node_id in self._row_nodes[iupper]:
-                overlaid[icol] = node_id
-            for icol, node_id in self._row_nodes[ilower]:
-                overlaid[icol] = node_id
-            for inode1, inode2 in zip(overlaid[:-1], overlaid[1:]):
-                if inode1 is not None and inode2 is not None:
-                    self.graph.add_edge(inode1, inode2, next(edge_id_gen))
-
-        # Construct the qubit mapping graph (nodes=links and plaquettes, edges=qubit connectivity)
-        self.qubit_graph.add_nodes_from([('link', idx) for idx in self.graph.edge_indices()])
-
-        # Find the plaquettes through graph cycles of length 4
-        plaquettes = set()
-        for node in self.graph.node_indices():
-            for cycle in rx.all_simple_paths(self.graph, node, node, min_depth=4, cutoff=4):
-                if len(cycle) == 4:
-                    plaquettes.add(tuple(sorted(cycle[:3])))
-
-        for pid, plaquette in enumerate(sorted(plaquettes)):
-            plaq_node_id = self.qubit_graph.add_node(('plaq', pid))
-            for inode in range(3):
-                link_id = self.graph.edge_indices_from_endpoints(
-                    plaquette[inode], plaquette[(inode + 1) % 3]
-                )[0]
-                self.qubit_graph.add_edge(link_id, plaq_node_id, None)
-
-        # Construct the dual graph
-        self.dual_graph.add_nodes_from(range(len(plaquettes)))
-        for link_id in self.graph.edge_indices():
-            # pylint: disable-next=cell-var-from-loop
-            link_node = self.qubit_graph.filter_nodes(lambda d: d == ('link', link_id))[0]
-            plaq_nodes = self.qubit_graph.neighbors(link_node)
-            if len(plaq_nodes) == 0:
-                continue
-            pidx1 = self.qubit_graph[plaq_nodes[0]][1]
-            if len(plaq_nodes) == 1:
-                pidx2 = self.dual_graph.add_node(None)
-            else:
-                pidx2 = self.qubit_graph[plaq_nodes[1]][1]
-            self.dual_graph.add_edge(pidx1, pidx2, link_id)
-
-    def _graph_node_pos(self) -> dict[int, tuple[int, int]]:
-        pos = {}
-        nrows = len(self._row_nodes)
-        for irow, row_nodes in enumerate(self._row_nodes):
-            for icol, node_id in row_nodes:
-                pos[node_id] = (0.5 * icol, np.sqrt(3) * (nrows - irow - 1))
-        return pos
+        config_rows = sanitize_rows(configuration)
+        graph = make_primal_graph(config_rows)
+        dual_graph = make_dual_graph(graph)
+        qubit_graph = make_qubit_graph(graph, dual_graph)
+        super().__init__(graph, dual_graph, qubit_graph)
 
     def _draw_qubit_graph_links(self, graph, layout, pos, selected_links, ax):
-        layout_r = {qubit: link for link, qubit in enumerate(layout[:self.num_links])}
-        plotted_qubits = set()
-        for pidx in range(self.num_plaquettes):
-            qp = layout[self.num_links + pidx]
-            neighbors = graph.neighbors(qp)
-            qh = next(ql for ql in neighbors if abs(ql - qp) != 1)
-            if qh > qp:
-                left_slope = 1
-                right_slope = -1
-            else:
-                left_slope = -1
-                right_slope = 1
+        plaq_logical_qubit = self.qubit_graph.filter_nodes(payload_contains(['plaq']))[0]
+        plaq_id = self.qubit_graph[plaq_logical_qubit][1]
+        plaq_nodes = self.dual_graph[plaq_id]
+        ref_coord = (np.mean([self.graph[node][0] for node in plaq_nodes]),
+                     np.mean(np.unique([self.graph[node][1] for node in plaq_nodes])))
+        offset = np.array(pos[layout[plaq_logical_qubit]])
 
-            for iq, dx, slope in [(qh, 2, 0), (qp - 1, 1, left_slope), (qp + 1, 1, right_slope)]:
-                if iq in neighbors and iq not in plotted_qubits:
-                    plotted_qubits.add(iq)
-                    link = layout_r[iq]
-                    color = '#ff11ff' if link in selected_links else '#881188'
-                    x, y = pos[iq]
-                    ax.plot([x - dx, x + dx], [y - slope * 1, y + slope * 1],
-                            linewidth=1, linestyle='solid', marker='none', color=color)
+        for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
+            x1, y1 = 2. * (np.array(self.graph[n1]) - ref_coord) + offset
+            x2, y2 = 2. * (np.array(self.graph[n2]) - ref_coord) + offset
+            color = '#ff11ff' if link_id in selected_links else '#881188'
+            ax.plot([x1, x2], [y1, y2],
+                    linewidth=1, linestyle='solid', marker='none', color=color)
 
     def _layout_node_matcher(
         self,
@@ -289,3 +190,121 @@ class TriangularZ2Lattice(PureZ2LGT):
                 gate_counts[('rzz', (ctrl, targ))] += 1
 
         return dict(gate_counts)
+
+
+def sanitize_rows(configuration: str):
+    rows = configuration.split('\n')
+    if any(re.search('[^ -╷╵╎*^v]', row) for row in rows):
+        raise ValueError('Lattice constructor argument contains invalid character(s)')
+    first_row = 0
+    while not rows[first_row].strip():
+        first_row += 1
+    rows = rows[first_row:]
+    last_row = len(rows)
+    while not rows[last_row - 1].strip():
+        last_row -= 1
+    rows = rows[:last_row]
+    first_column = 0
+    while all(not row[first_column] for row in rows):
+        first_column += 1
+    rows = [row[first_column:] for row in rows]
+    return rows
+
+
+def make_primal_graph(config_rows: list[str]):
+    nodes = {}
+    nrows = len(config_rows)
+    for irow, row in enumerate(config_rows):
+        ifirst = next(ip for ip, char in enumerate(row) if char != ' ')
+        for icol in range(ifirst, len(row), 2):
+            char = row[icol]
+            if char == ' ':
+                continue
+            if char not in '*^v':
+                raise ValueError(f'Invalid row {row}')
+            nodes[(icol, nrows - 1 - irow)] = char
+
+    graph = rx.PyGraph()
+    node_indices = dict(zip(nodes.keys(), graph.add_nodes_from(nodes.keys())))
+
+    for (x, y), node_char in nodes.items():
+        nid1 = node_indices[(x, y)]
+        irow = nrows - 1 - y
+        icol = x
+        if node_char == '*' and nodes.get((x + 2, y), '') == '*':
+            nid2 = node_indices[(x + 2, y)]
+            direct_link = config_rows[irow][icol + 1] == '-'
+            graph.add_edge(nid1, nid2, direct_link)
+        if (nid2 := node_indices.get((x - 1, y - 1))) is not None:
+            direct_link = config_rows[irow + 1][icol] in '╵╎'
+            graph.add_edge(nid1, nid2, direct_link)
+        if (nid2 := node_indices.get((x + 1, y - 1))) is not None:
+            direct_link = config_rows[irow][icol + 1] in '╷╎'
+            graph.add_edge(nid1, nid2, direct_link)
+
+    return graph
+
+
+def make_dual_graph(primal_graph: rx.PyGraph):
+    # Find the plaquettes through graph cycles of length 4
+    plaquettes = set()
+    for node in primal_graph.node_indices():
+        for cycle in rx.all_simple_paths(primal_graph, node, node, min_depth=4, cutoff=4):
+            if len(cycle) == 4:
+                plaquettes.add(tuple(sorted(cycle[:3])))
+    plaquettes = sorted(plaquettes)
+
+    # Construct the dual graph
+    dual_graph = rx.PyGraph()
+    dual_graph.add_nodes_from(plaquettes)
+
+    for pid1 in dual_graph.node_indices():
+        plaq_nodes = dual_graph[pid1]
+        for n1, n2 in zip(plaq_nodes, plaq_nodes[1:] + plaq_nodes[0:1]):
+            link_id = primal_graph.edge_indices_from_endpoints(n1, n2)[0]
+            if dual_graph.filter_edges(payload_matches(link_id)):
+                # Plaquettes already linked
+                continue
+
+            neighbors = dual_graph.filter_nodes(payload_contains([n1, n2]))
+            neighbors = list(neighbors)
+            neighbors.remove(pid1)
+            if neighbors:
+                pid2 = neighbors[0]
+            else:
+                pid2 = dual_graph.add_node(tuple(sorted((n1, n2))) + (None,))
+
+            dual_graph.add_edge(pid1, pid2, link_id)
+
+    return dual_graph
+
+
+def make_qubit_graph(primal_graph: rx.PyGraph, dual_graph: rx.PyGraph):
+    qubit_graph = rx.PyGraph()
+    qubit_graph.add_nodes_from([('link', link_id) for link_id in primal_graph.edge_indices()])
+    for link_id in primal_graph.edge_indices():
+        direct_link = primal_graph.get_edge_data_by_index(link_id)
+        # Find two plaquettes this link borders
+        dual_eid = dual_graph.filter_edges(payload_matches(link_id))[0]
+        for plaq_id in dual_graph.get_edge_endpoints_by_index(dual_eid):
+            if None in dual_graph[plaq_id]:
+                # This is a dummy plaquette node at the boundary
+                continue
+            # Find the other two links that form this plaquette
+            plaq_link_ids = [dual_graph.get_edge_data_by_index(eid)
+                             for eid in dual_graph.in_edge_indices(plaq_id)]
+            plaq_link_ids.remove(link_id)
+            if direct_link:
+                for plid in plaq_link_ids:
+                    qubit_graph.add_edge(link_id, plid, None)
+            elif any(primal_graph.get_edge_data_by_index(plid) for plid in plaq_link_ids):
+                # This is a linearly connected (no-ancilla) plaquette
+                continue
+            else:
+                try:
+                    plaq_node_id = qubit_graph.filter_nodes(payload_matches(('plaq', plaq_id)))[0]
+                except IndexError:
+                    plaq_node_id = qubit_graph.add_node(('plaq', plaq_id))
+                qubit_graph.add_edge(link_id, plaq_node_id, None)
+
+    return qubit_graph
