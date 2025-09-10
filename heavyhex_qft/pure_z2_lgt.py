@@ -2,8 +2,10 @@
 """Z2 lattice gauge theory with static charges."""
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from itertools import combinations, count
-from typing import Optional
+from typing import Any, Optional
+import logging
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -15,6 +17,40 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit_ibm_runtime.models import BackendProperties
 from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
 from .utils import as_bitarray, to_pauli_string, qubit_coordinates
+
+LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class Vertex:
+    """Vertex data."""
+    vertex_id: int
+    position: tuple[float, float]
+    plaquettes: set[int] = field(default_factory=set)
+
+
+@dataclass
+class Link:
+    """Link data."""
+    link_id: int
+    logical_qubit: int = -1
+
+
+@dataclass
+class Plaquette:
+    """Plaquette data."""
+    plaq_id: int
+    position: tuple[float, float]
+    vertices: set[int] = field(default_factory=set)
+    logical_qubit: int | None = None
+    direct_link: Link | None = None
+
+
+@dataclass
+class DummyPlaquette:
+    """Dummy plaquette for dual graph."""
+    position: tuple[float, float]
+    vertices: set[int] = field(default_factory=set)
 
 
 class PureZ2LGT(ABC):
@@ -41,18 +77,17 @@ class PureZ2LGT(ABC):
     ancillas should have L+A+P nodes, with the first L representing the links, next A representing
     the ancillas, and the last P as the plaquettes.
     """
-    def __init__(self, num_vertices: int):
-        self.graph = rx.PyGraph()
-        self.graph.add_nodes_from(range(num_vertices))
-        self.dual_graph = rx.PyGraph()
-        self.qubit_graph = rx.PyGraph()
+    def __init__(self, graph: rx.PyGraph, dual_graph: rx.PyGraph, qubit_graph: rx.PyGraph):
+        self.graph = graph
+        self.dual_graph = dual_graph
+        self.qubit_graph = qubit_graph
 
         # Cached vertex parity
         self._vertex_parity = None
 
     @property
     def num_plaquettes(self) -> int:
-        return len(self.dual_graph.filter_nodes(lambda d: d is not None))
+        return len(self.dual_graph.filter_nodes(lambda p: isinstance(p, Plaquette)))
 
     @property
     def num_links(self) -> int:
@@ -77,7 +112,8 @@ class PureZ2LGT(ABC):
         links: Optional[Sequence[int]] = None,
         ax: Optional[Axes] = None
     ) -> Figure:
-        kwargs = {'labels': str, 'edge_labels': str}
+        kwargs = {'labels': str, 'edge_labels': str,
+                  'pos': {vertex.vertex_id: vertex.position for vertex in self.graph.nodes()}}
         if vertices is not None:
             kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
             if len(vertices) == self.num_vertices:
@@ -92,17 +128,51 @@ class PureZ2LGT(ABC):
             for il in links:
                 kwargs['edge_color'][il] = 'r'
 
-        if (pos := self._graph_node_pos()) is not None:
-            kwargs['pos'] = pos
+        graph = rx.PyGraph()
+        graph.add_nodes_from(range(self.graph.num_nodes()))
+        for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
+            graph.add_edge(n1, n2, link_id)
 
-        return rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
+        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
+        # overwritten in the function
+        if fig is None:
+            fig = plt.gcf()
 
-    def _graph_node_pos(self) -> dict[int, tuple[float, float]] | None:
-        return None
+        # Draw the plaquette ids
+        for plaquette in self.dual_graph.nodes():
+            if isinstance(plaquette, DummyPlaquette):
+                continue
+            x, y = plaquette.position
+            fig.axes[0].text(x, y, f'{plaquette.plaq_id}', ha='center', va='center')
+
+        if not plt.isinteractive() or ax is None:
+            return fig
 
     def draw_dual_graph(self, ax: Optional[Axes] = None) -> Figure:
-        return rx.visualization.mpl_draw(self.dual_graph, ax=ax, with_labels=True, labels=str,
-                                         edge_labels=str)
+        kwargs = {'labels': str, 'edge_labels': str,
+                  'pos': {nid: self.dual_graph[nid].position
+                          for nid in self.dual_graph.node_indices()}}
+
+        graph = rx.PyGraph()
+        graph.add_nodes_from(range(self.num_plaquettes))
+        graph.add_nodes_from([''] * (self.dual_graph.num_nodes() - self.num_plaquettes))
+        for link_id, (n1, n2, _) in self.dual_graph.edge_index_map().items():
+            graph.add_edge(n1, n2, link_id)
+
+        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
+        # overwritten in the function
+        if fig is None:
+            fig = plt.gcf()
+
+        # Draw the vertex ids
+        for vertex in self.graph.nodes():
+            x, y = vertex.position
+            fig.axes[0].text(x, y, f'{vertex.vertex_id}', ha='center', va='center')
+
+        if not plt.isinteractive() or ax is None:
+            return fig
 
     def draw_qubit_graph(
         self,
@@ -111,47 +181,37 @@ class PureZ2LGT(ABC):
         ax: Optional[Axes] = None,
         links: Optional[Sequence[int]] = None,
         plaquettes: Optional[Sequence[int]] = None,
-        qubits: Optional[Sequence[int]] = None,
+        physical_qubits: Optional[Sequence[int]] = None,
         **kwargs
     ) -> Figure:
         cgraph = coupling_map.graph.to_undirected()
-        graph = rx.PyGraph(multigraph=False, node_count_hint=cgraph.num_nodes())
-        graph.add_nodes_from(cgraph.node_indices())
+        physical_graph = rx.PyGraph(multigraph=False, node_count_hint=cgraph.num_nodes())
+        physical_graph.add_nodes_from(cgraph.node_indices())
         for source, target in cgraph.edge_list():
-            graph.add_edge(source, target, None)
+            physical_graph.add_edge(source, target, None)
 
         selected_links = set(links or [])
         selected_plaquettes = set(plaquettes or [])
-        selected_qubits = set()
-        if qubits:
-            for qubit in qubits:
-                try:
-                    logical_qubit = layout.index(qubit)
-                except IndexError:
-                    selected_qubits.add(qubit)
-                else:
-                    if logical_qubit < self.num_links:
-                        selected_links.add(logical_qubit)
-                    else:
-                        selected_plaquettes.add(logical_qubit - self.num_links)
+        selected_qubits = set(physical_qubits or [])
 
-        node_color = [None] * graph.num_nodes()
-        for lidx in range(self.num_links):
-            physical_qubit = layout[lidx]
-            graph[physical_qubit] = f'{physical_qubit}\nL:{lidx}'
-            if lidx in selected_links:
-                node_color[physical_qubit] = '#ffaaff'
-            else:
-                node_color[physical_qubit] = '#cc11cc'
-        for pidx in range(self.num_plaquettes):
-            physical_qubit = layout[pidx + self.num_links]
-            graph[physical_qubit] = f'{physical_qubit}\nP:{pidx}'
-            if pidx in selected_plaquettes:
-                node_color[physical_qubit] = '#aaffff'
-            else:
-                node_color[physical_qubit] = '#11cccc'
+        node_color = [None] * physical_graph.num_nodes()
+        for qobj in self.qubit_graph.nodes():
+            physical_qubit = layout[qobj.logical_qubit]
+            if isinstance(qobj, Link):
+                physical_graph[physical_qubit] = f'{physical_qubit}\nL:{qobj.link_id}'
+                if qobj.link_id in selected_links:
+                    node_color[physical_qubit] = '#ffaaff'
+                else:
+                    node_color[physical_qubit] = '#cc11cc'
+            elif isinstance(qobj, Plaquette):
+                physical_graph[physical_qubit] = f'{physical_qubit}\nP:{qobj.plaq_id}'
+                if qobj.plaq_id in selected_plaquettes:
+                    node_color[physical_qubit] = '#aaffff'
+                else:
+                    node_color[physical_qubit] = '#11cccc'
+
         for physical_qubit in set(coupling_map.physical_qubits) - set(layout):
-            graph[physical_qubit] = f'{physical_qubit}'
+            physical_graph[physical_qubit] = f'{physical_qubit}'
             if physical_qubit in selected_qubits:
                 node_color[physical_qubit] = '#cccccc'
             else:
@@ -167,18 +227,19 @@ class PureZ2LGT(ABC):
         if 'font_size' not in kwargs:
             kwargs['font_size'] = 8
 
-        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, labels=str, **kwargs)
+        fig = rx.visualization.mpl_draw(physical_graph, ax=ax, with_labels=True, labels=str,
+                                        **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
         # overwritten in the function
         if fig is None:
             fig = plt.gcf()
         # Add link drawings
-        self._draw_qubit_graph_links(graph, layout, pos, selected_links, ax or fig.axes[0])
+        self._draw_qubit_graph_links(layout, pos, selected_links, ax or fig.axes[0])
 
         if not plt.isinteractive() or ax is None:
             return fig
 
-    def _draw_qubit_graph_links(self, graph, layout, pos, selected_links, ax):
+    def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
         """Draw links on the qubit graph plot."""
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
@@ -187,15 +248,11 @@ class PureZ2LGT(ABC):
 
     def link_plaquettes(self, link_id: int) -> list[int]:
         """Return the list (size 1 or 2) of ids of the plaquettes that have the link as an edge."""
-        plaq_nodes = self.dual_graph.edge_index_map()[link_id][:2]
-        return [plaq_id for plaq_id in plaq_nodes if self.dual_graph[plaq_id] is not None]
+        nids = self.dual_graph.edge_index_map()[link_id][:2]
+        return [nid for nid in nids if isinstance(self.dual_graph[nid], Plaquette)]
 
     def vertex_links(self, vertex_id: int) -> list[int]:
-        """Return the list of ids of the links incident on the vertex.
-
-        Note that the edge ids of the lattice graph and the node ids of the corresponding link
-        qubits in the coincident.
-        """
+        """Return the list of ids of the links incident on the vertex."""
         return list(self.graph.incident_edges(vertex_id))
 
     def link_vertices(self, link_id: int) -> tuple[int, int]:
@@ -230,23 +287,33 @@ class PureZ2LGT(ABC):
             cgraph[idx] = (idx, tuple(cgraph.neighbors(idx)))
 
         if qubit_assignment is None:
+            LOG.info('[layout_heavy_hex] qubit_assignment not given. Using all candidates.')
             node_matcher = None
         else:
             if isinstance(qubit_assignment, int):
                 qubit_assignment = {('link', 0): qubit_assignment}
 
+            LOG.info('[layout_heavy_hex] Qubit assignment: %s', qubit_assignment)
+
             def node_matcher(physical_qubit_data, lattice_qubit_data):
                 physical_qubit, physical_neighbors = physical_qubit_data
-                node_type, obj_id = lattice_qubit_data
+                qobj = lattice_qubit_data
                 # True if this is an assigned qubit
-                if (assignment := qubit_assignment.get(lattice_qubit_data)) is not None:
+                if isinstance(qobj, Link):
+                    obj_type = 'link'
+                    obj_id = qobj.link_id
+                else:
+                    obj_type = 'plaq'
+                    obj_id = qobj.plaq_id
+                if (assignment := qubit_assignment.get((obj_type, obj_id))) is not None:
                     return assignment == physical_qubit
                 # Otherwise recall class-default matcher
-                return self._layout_node_matcher(physical_qubit, physical_neighbors, node_type,
-                                                 obj_id)
+                return self._layout_node_matcher(physical_qubit, physical_neighbors, qobj)
 
+        LOG.info('[layout_heavy_hex] Finding layout candidates with vf2_mapping..')
         mappings = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher,
                                   subgraph=True, induced=False)
+        LOG.info('[layout_heavy_hex] Done.')
         mappings = list(mappings)
         if len(mappings) == 0:
             raise ValueError('Layout with the given qubit assignment could not be found.')
@@ -256,6 +323,8 @@ class PureZ2LGT(ABC):
         if backend_properties is not None:
             twoq_gate_name = next(gate_prop.gate for gate_prop in backend_properties.gates
                                   if gate_prop.gate in ['ecr', 'cz'])
+            LOG.info('[layout_heavy_hex] Using 2Q gate name %s to evaluate the error rates',
+                     twoq_gate_name)
 
         score_max, best_layout = None, None
         for mapping in mappings:
@@ -265,13 +334,16 @@ class PureZ2LGT(ABC):
 
             if backend_properties is None:
                 best_layout = layout
+                LOG.info('[layout_heavy_hex] Using the first layout found since no error'
+                         ' information is available')
                 break
 
             # Readout errors of the link qubits
-            log_error_score = sum(
-                np.log(1. - min(backend_properties.readout_error(qubit), 0.99999))
-                for qubit in layout[:self.num_links]
+            readout_fidelity = np.array(
+                [1. - min(backend_properties.readout_error(layout[qobj.logical_qubit]), 0.99999)
+                 for qobj in self.qubit_graph.nodes() if isinstance(qobj, Link)]
             )
+            log_error_score = np.sum(np.log(readout_fidelity))
             # 2Q gate errors
             for (gate, logical_qubits), counts in self.magnetic_2q_gate_counts(basis_2q).items():
                 if gate in ['cx', 'cz']:
@@ -289,6 +361,7 @@ class PureZ2LGT(ABC):
             if score_max is None or log_error_score > score_max:
                 score_max = log_error_score
                 best_layout = layout
+                LOG.info('[layout_heavy_hex] Best layout error score: %.3f', score_max)
 
         if best_layout is None:
             raise ValueError('I do not think this would ever happen')
@@ -300,8 +373,7 @@ class PureZ2LGT(ABC):
         self,
         physical_qubit: int,
         physical_neighbors: tuple[int, ...],
-        node_type: str,
-        obj_id: int
+        qobj: Link | Plaquette
     ) -> bool:
         """Node matcher function for qubit mapping."""
 
@@ -380,13 +452,14 @@ class PureZ2LGT(ABC):
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.rz(-2. * time, range(self.num_links))
+        circuit.rz(-2. * time,
+                   self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Link)))
         return circuit
 
     def electric_clifford(self) -> QuantumCircuit:
         """Construct the electric term circuit at delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.sdg(range(self.num_links))
+        circuit.sdg(self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Link)))
         return circuit
 
     @abstractmethod
@@ -408,3 +481,15 @@ class PureZ2LGT(ABC):
         basis_2q: str = 'cx'
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
+
+
+def payload_matches(value: Any):
+    def match(payload):
+        return payload == value
+    return match
+
+
+def payload_contains(values: Any):
+    def contains(payload):
+        return all(value in payload for value in values)
+    return contains
