@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import combinations, count
 from typing import Any, Optional
+import logging
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -16,6 +17,8 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit_ibm_runtime.models import BackendProperties
 from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
 from .utils import as_bitarray, to_pauli_string, qubit_coordinates
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -284,10 +287,13 @@ class PureZ2LGT(ABC):
             cgraph[idx] = (idx, tuple(cgraph.neighbors(idx)))
 
         if qubit_assignment is None:
+            LOG.info('[layout_heavy_hex] qubit_assignment not given. Using all candidates.')
             node_matcher = None
         else:
             if isinstance(qubit_assignment, int):
                 qubit_assignment = {('link', 0): qubit_assignment}
+
+            LOG.info('[layout_heavy_hex] Qubit assignment: %s', qubit_assignment)
 
             def node_matcher(physical_qubit_data, lattice_qubit_data):
                 physical_qubit, physical_neighbors = physical_qubit_data
@@ -304,8 +310,10 @@ class PureZ2LGT(ABC):
                 # Otherwise recall class-default matcher
                 return self._layout_node_matcher(physical_qubit, physical_neighbors, qobj)
 
+        LOG.info('[layout_heavy_hex] Finding layout candidates with vf2_mapping..')
         mappings = rx.vf2_mapping(cgraph, self.qubit_graph, node_matcher=node_matcher,
                                   subgraph=True, induced=False)
+        LOG.info('[layout_heavy_hex] Done.')
         mappings = list(mappings)
         if len(mappings) == 0:
             raise ValueError('Layout with the given qubit assignment could not be found.')
@@ -315,6 +323,8 @@ class PureZ2LGT(ABC):
         if backend_properties is not None:
             twoq_gate_name = next(gate_prop.gate for gate_prop in backend_properties.gates
                                   if gate_prop.gate in ['ecr', 'cz'])
+            LOG.info('[layout_heavy_hex] Using 2Q gate name %s to evaluate the error rates',
+                     twoq_gate_name)
 
         score_max, best_layout = None, None
         for mapping in mappings:
@@ -324,6 +334,8 @@ class PureZ2LGT(ABC):
 
             if backend_properties is None:
                 best_layout = layout
+                LOG.info('[layout_heavy_hex] Using the first layout found since no error'
+                         ' information is available')
                 break
 
             # Readout errors of the link qubits
@@ -349,6 +361,7 @@ class PureZ2LGT(ABC):
             if score_max is None or log_error_score > score_max:
                 score_max = log_error_score
                 best_layout = layout
+                LOG.info('[layout_heavy_hex] Best layout error score: %.3f', score_max)
 
         if best_layout is None:
             raise ValueError('I do not think this would ever happen')

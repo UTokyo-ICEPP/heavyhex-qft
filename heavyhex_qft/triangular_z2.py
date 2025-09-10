@@ -45,6 +45,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             ''')
     """
     def __init__(self, configuration: str):
+        self.configuration = configuration
         config_rows = sanitize_rows(configuration)
         graph, direct_links = make_primal_graph(config_rows)
         dual_graph = make_dual_graph(graph)
@@ -54,7 +55,8 @@ class TriangularZ2Lattice(PureZ2LGT):
     def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
         # Locate one plaquette qubit and compute the coordinate transformation between the dual
         # graph and the physical qubit graph
-        plaquette = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
+        plaq_id = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
+        plaquette = self.qubit_graph[plaq_id]
         ref_coord = np.array(plaquette.position)
         offset = np.array(pos[layout[plaquette.logical_qubit]])
 
@@ -354,7 +356,7 @@ def make_qubit_graph(dual_graph: rx.PyGraph, direct_links: list[int]):
     for plaquette in dual_graph.nodes():
         if isinstance(plaquette, DummyPlaquette):
             continue
-        if (plaq_direct_link := set([dual_graph.incident_edges(plaquette.plaq_id)]) & direct_links):
+        if (plaq_direct_link := set(dual_graph.incident_edges(plaquette.plaq_id)) & direct_links):
             # If there is a direct link surrounding this plaquette, that is the connection target
             link_id = plaq_direct_link.pop()
             plaquette.direct_link = dual_graph.get_edge_data_by_index(link_id)
