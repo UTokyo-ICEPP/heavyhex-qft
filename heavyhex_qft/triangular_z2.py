@@ -3,10 +3,11 @@
 from collections import defaultdict
 from numbers import Number
 import re
+from itertools import permutations
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from .pure_z2_lgt import PureZ2LGT, payload_matches, payload_contains
+from .pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPlaquette
 
 
 class TriangularZ2Lattice(PureZ2LGT):
@@ -45,22 +46,21 @@ class TriangularZ2Lattice(PureZ2LGT):
     """
     def __init__(self, configuration: str):
         config_rows = sanitize_rows(configuration)
-        graph = make_primal_graph(config_rows)
+        graph, direct_links = make_primal_graph(config_rows)
         dual_graph = make_dual_graph(graph)
-        qubit_graph = make_qubit_graph(graph, dual_graph)
+        qubit_graph = make_qubit_graph(dual_graph, direct_links)
         super().__init__(graph, dual_graph, qubit_graph)
 
-    def _draw_qubit_graph_links(self, graph, layout, pos, selected_links, ax):
-        plaq_logical_qubit = self.qubit_graph.filter_nodes(payload_contains(['plaq']))[0]
-        plaq_id = self.qubit_graph[plaq_logical_qubit][1]
-        plaq_nodes = self.dual_graph[plaq_id]
-        ref_coord = (np.mean([self.graph[node][0] for node in plaq_nodes]),
-                     np.mean(np.unique([self.graph[node][1] for node in plaq_nodes])))
-        offset = np.array(pos[layout[plaq_logical_qubit]])
+    def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
+        # Locate one plaquette qubit and compute the coordinate transformation between the dual
+        # graph and the physical qubit graph
+        plaquette = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
+        ref_coord = np.array(plaquette.position)
+        offset = np.array(pos[layout[plaquette.logical_qubit]])
 
         for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
-            x1, y1 = 2. * (np.array(self.graph[n1]) - ref_coord) + offset
-            x2, y2 = 2. * (np.array(self.graph[n2]) - ref_coord) + offset
+            x1, y1 = 2. * (np.array(self.graph[n1].position) - ref_coord) + offset
+            x2, y2 = 2. * (np.array(self.graph[n2].position) - ref_coord) + offset
             color = '#ff11ff' if link_id in selected_links else '#881188'
             ax.plot([x1, x2], [y1, y2],
                     linewidth=1, linestyle='solid', marker='none', color=color)
@@ -69,27 +69,46 @@ class TriangularZ2Lattice(PureZ2LGT):
         self,
         physical_qubit: int,
         physical_neighbors: tuple[int, ...],
-        node_type: str,
-        obj_id: int
+        qobj: Link | Plaquette
     ) -> bool:
         """Node matcher function for qubit mapping."""
-        if node_type == 'plaq':
+        if isinstance(qobj, Plaquette):
             return len(physical_neighbors) == 3
-        else:
-            return len(physical_neighbors) in (1, 2)
+        return len(physical_neighbors) in (1, 2)
 
-    def _plaquette_links(self):
-        """Return a list of link qubits for each plaquette, ordered counterclockwise."""
-        plaquette_links = []
-        for plid in range(self.num_plaquettes):
-            links = list(sorted(self.plaquette_links(plid)))
-            if links[2] - links[1] == 1:
-                # Downward pointing plaquette
-                plaquette_links.append(links)
+    def _twoq_gate_table(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return the parallel 2-qubit gate ordering."""
+        nump = self.num_plaquettes
+        controls = np.full((nump, 3), -1, dtype=int)
+        targets = np.empty(nump, dtype=int)
+        invalid_link_id = self.num_links
+        for plaquette in self.dual_graph.nodes():
+            if plaquette.logical_qubit is None and plaquette.direct_link is None:
+                continue
+
+            link_ids = self.plaquette_links(plaquette.plaq_id)
+            if (dlink := plaquette.direct_link) is None:
+                # Standard plaquette - all link qubits connected to the plaquette qubit
+                targets[plaquette.plaq_id] = plaquette.logical_qubit
             else:
-                # Upward pointing plaquette
-                plaquette_links.append([links[0], links[2], links[1]])
-        return np.array(plaquette_links)
+                targets[plaquette.plaq_id] = dlink.logical_qubit
+                # Remove the direct link from the list of control qubits and add a dummy index
+                link_ids.remove(dlink.link_id)
+                link_ids.append(invalid_link_id)
+                invalid_link_id += 1
+
+            for perm in permutations(link_ids):
+                # Find a permutation that does not clash with any of the existing control sequence
+                if np.all(np.array(perm)[None, :] != controls):
+                    controls[plaquette.plaq_id] = perm
+                    break
+            else:
+                raise RuntimeError('Failed to find a viable link ID permutation')
+
+        # Set the invalid controls to -1
+        controls[np.where(controls >= self.num_links)] = -1
+
+        return controls, targets
 
     def magnetic_evolution(
         self,
@@ -99,9 +118,6 @@ class TriangularZ2Lattice(PureZ2LGT):
     ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        plaquette_links = self._plaquette_links()
-        # Plaquette qubit ids
-        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
         # Rzzz rotation angle
         angle = -2. * plaquette_energy * time
         if isinstance(angle, Number):
@@ -116,55 +132,51 @@ class TriangularZ2Lattice(PureZ2LGT):
             abs_angle = angle
             sign_angle = -1.
 
+        controls, targets = self._twoq_gate_table()
+        targets = targets.tolist()
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
         if basis_2q == 'cx':
-            circuit.cx(plaquette_links[:, 0], qpl)
-            circuit.cx(plaquette_links[:, 1], qpl)
-            circuit.cx(plaquette_links[:, 2], qpl)
-            circuit.rz(angle, qpl)
-            circuit.cx(plaquette_links[:, 2], qpl)
-            circuit.cx(plaquette_links[:, 1], qpl)
-            circuit.cx(plaquette_links[:, 0], qpl)
+            for control_qubits, target_qubit in zip(controls, targets):
+                cq = control_qubits[control_qubits >= 0].tolist()
+                circuit.cx(cq, target_qubit)
+                circuit.rz(angle, target_qubit)
+                circuit.cx(cq, target_qubit)
+
         elif basis_2q == 'cz':
-            circuit.h(qpl)
-            circuit.cz(plaquette_links[:, 0], qpl)
-            circuit.cz(plaquette_links[:, 1], qpl)
-            circuit.cz(plaquette_links[:, 2], qpl)
-            circuit.rx(angle, qpl)
-            circuit.cz(plaquette_links[:, 2], qpl)
-            circuit.cz(plaquette_links[:, 1], qpl)
-            circuit.cz(plaquette_links[:, 0], qpl)
-            circuit.h(qpl)
+            for control_qubits, target_qubit in zip(controls, targets):
+                cq = control_qubits[control_qubits >= 0].tolist()
+                circuit.h(target_qubit)
+                circuit.cz(cq, target_qubit)
+                circuit.rx(angle, target_qubit)
+                circuit.cz(cq, target_qubit)
+                circuit.h(target_qubit)
         else:
-            circuit.cx(plaquette_links[:, 0], qpl)
-            circuit.cx(plaquette_links[:, 1], qpl)
-            if sign_angle < 0.:
-                # Continuous Rzz accepts positive arguments only; sandwitch with Xs to reverse sign
-                circuit.x(qpl)
-            circuit.rzz(abs_angle, plaquette_links[:, 2], qpl)
-            if sign_angle < 0.:
-                circuit.x(qpl)
-            circuit.cx(plaquette_links[:, 1], qpl)
-            circuit.cx(plaquette_links[:, 0], qpl)
+            for control_qubits, target_qubit in zip(controls, targets):
+                cq = control_qubits[control_qubits >= 0].tolist()
+                circuit.cx(cq[:-1], target_qubit)
+                if sign_angle < 0.:
+                    # Continuous Rzz accepts positive arguments only; sandwitch with Xs
+                    circuit.x(target_qubit)
+                circuit.rzz(abs_angle, cq[-1], target_qubit)
+                if sign_angle < 0.:
+                    circuit.x(target_qubit)
+                circuit.cx(cq[:-1], target_qubit)
         circuit.h(range(self.num_links))
         return circuit
 
     def magnetic_clifford(self) -> QuantumCircuit:
         """Construct the magnetic term circuit at K*delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        plaquette_links = self._plaquette_links()
-        # Plaquette qubit ids
-        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
-        # Rzzz circuit sandwitched by Hadamards on all links
+        controls, targets = self._twoq_gate_table()
+        targets = targets.tolist()
+        # Rzzz(pi/2) circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
-        circuit.cx(plaquette_links[:, 0], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.sdg(qpl)
-        circuit.cx(plaquette_links[:, 2], qpl)
-        circuit.cx(plaquette_links[:, 1], qpl)
-        circuit.cx(plaquette_links[:, 0], qpl)
+        for control_qubits, target_qubit in zip(controls, targets):
+            cq = control_qubits[control_qubits >= 0].tolist()
+            circuit.cx(cq, target_qubit)
+            circuit.sdg(target_qubit)
+            circuit.cx(cq, target_qubit)
         circuit.h(range(self.num_links))
         return circuit
 
@@ -174,25 +186,25 @@ class TriangularZ2Lattice(PureZ2LGT):
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
         gate_counts = defaultdict(int)
-        plaquette_links = self._plaquette_links()
-        # Plaquette qubit ids
-        qpl = np.arange(self.num_links, self.qubit_graph.num_nodes())
+        controls, targets = self._twoq_gate_table()
+        targets = targets.tolist()
         if basis_2q in ['cx', 'cz']:
-            for side in range(3):
-                for ctrl, targ in zip(plaquette_links[:, side], qpl):
-                    gate_counts[(basis_2q, (ctrl, targ))] += 2
+            for control_qubits, target_qubit in zip(controls, targets):
+                for control_qubit in control_qubits[control_qubits >= 0].tolist():
+                    gate_counts[(basis_2q, (control_qubit, target_qubit))] += 2
 
         elif basis_2q == 'rzz':
-            for side in range(2):
-                for ctrl, targ in zip(plaquette_links[:, side], qpl):
-                    gate_counts[('cx', (ctrl, targ))] += 2
-            for ctrl, targ in zip(plaquette_links[:, 2], qpl):
-                gate_counts[('rzz', (ctrl, targ))] += 1
+            for control_qubits, target_qubit in zip(controls, targets):
+                cq = control_qubits[control_qubits >= 0].tolist()
+                for control_qubit in cq[:-1]:
+                    gate_counts[('cx', (control_qubit, target_qubit))] += 2
+                gate_counts[('rzz', (cq[-1], target_qubit))] += 1
 
         return dict(gate_counts)
 
 
-def sanitize_rows(configuration: str):
+def sanitize_rows(configuration: str) -> list[str]:
+    """Trim whitespaces and tokenize the lattice configuration string to rows."""
     rows = configuration.split('\n')
     if any(re.search('[^ -╷╵╎*^v]', row) for row in rows):
         raise ValueError('Lattice constructor argument contains invalid character(s)')
@@ -211,9 +223,22 @@ def sanitize_rows(configuration: str):
     return rows
 
 
-def make_primal_graph(config_rows: list[str]):
+def make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
+    """Construct the primal graph of the lattice from the row-tokenized configuration string.
+
+    The configuration syntax assumes that all adjacent vertices are connected and that the edges
+    will be connected via a plaquette qubit in the qubit graph, unless otherwise specified.
+    Special-case characters are:
+    - "^" or "v" for vertex: In the top and bottom rows, respectively, horizontally adjacent
+      vertices may be disconnected if either one is expressed by these characters.
+    - "-", "╵", "╷", or "╎" for link: Signifies that the corresponding plaquette will not have a
+      plaquette (ancilla) qubit at the center, and instead the link where these characters appear
+      will be directly connected to the other two link qubits.
+    """
+    # Identify vertices and their positions from the configuration
     nodes = {}
     nrows = len(config_rows)
+    vertex_id = 0
     for irow, row in enumerate(config_rows):
         ifirst = next(ip for ip, char in enumerate(row) if char != ' ')
         for icol in range(ifirst, len(row), 2):
@@ -222,30 +247,44 @@ def make_primal_graph(config_rows: list[str]):
                 continue
             if char not in '*^v':
                 raise ValueError(f'Invalid row {row}')
-            nodes[(icol, nrows - 1 - irow)] = char
+            nodes[(icol, nrows - 1 - irow)] = (vertex_id, char)
+            vertex_id += 1
 
+    # Initialize the graph with vertex nodes
     graph = rx.PyGraph()
-    node_indices = dict(zip(nodes.keys(), graph.add_nodes_from(nodes.keys())))
+    graph.add_nodes_from([Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())])
 
-    for (x, y), node_char in nodes.items():
-        nid1 = node_indices[(x, y)]
+    # Connect the vertices
+    direct_links = []
+    for vertex in graph.nodes():
+        node_char = nodes[vertex.position][1]
+        x, y = vertex.position
         irow = nrows - 1 - y
         icol = x
-        if node_char == '*' and nodes.get((x + 2, y), '') == '*':
-            nid2 = node_indices[(x + 2, y)]
-            direct_link = config_rows[irow][icol + 1] == '-'
-            graph.add_edge(nid1, nid2, direct_link)
-        if (nid2 := node_indices.get((x - 1, y - 1))) is not None:
-            direct_link = config_rows[irow + 1][icol] in '╵╎'
-            graph.add_edge(nid1, nid2, direct_link)
-        if (nid2 := node_indices.get((x + 1, y - 1))) is not None:
-            direct_link = config_rows[irow][icol + 1] in '╷╎'
-            graph.add_edge(nid1, nid2, direct_link)
+        # From left to right: Both vertices must be *
+        if node_char == '*' and (neighbor := nodes.get((x + 2, y), (None, None)))[1] == '*':
+            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
+            graph.update_edge_by_index(link_id, Link(link_id))
+            if config_rows[irow][icol + 1] == '-':
+                direct_links.append(link_id)
+        # From top to bottom left
+        if (neighbor := nodes.get((x - 1, y - 1))) is not None:
+            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
+            graph.update_edge_by_index(link_id, Link(link_id))
+            if config_rows[irow + 1][icol] in '╵╎':
+                direct_links.append(link_id)
+        # From top to bottom right
+        if (neighbor := nodes.get((x + 1, y - 1))) is not None:
+            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
+            graph.update_edge_by_index(link_id, Link(link_id))
+            if config_rows[irow][icol + 1] in '╷╎':
+                direct_links.append(link_id)
 
-    return graph
+    return graph, direct_links
 
 
-def make_dual_graph(primal_graph: rx.PyGraph):
+def make_dual_graph(primal_graph: rx.PyGraph) -> rx.PyGraph:
+    """Construct the dual graph of the lattice from the primal graph."""
     # Find the plaquettes through graph cycles of length 4
     plaquettes = set()
     for node in primal_graph.node_indices():
@@ -254,57 +293,87 @@ def make_dual_graph(primal_graph: rx.PyGraph):
                 plaquettes.add(tuple(sorted(cycle[:3])))
     plaquettes = sorted(plaquettes)
 
-    # Construct the dual graph
+    # Initialze the dual graph with plaquette nodes.
+    # Also update the vertex objects of the primal graph.
     dual_graph = rx.PyGraph()
-    dual_graph.add_nodes_from(plaquettes)
+    for plaq_id, plaq_vids in enumerate(plaquettes):
+        vertices = [primal_graph[vid] for vid in plaq_vids]
+        # Position the plaquette node at the center of the rectangle that bounds the triangle
+        pos_x = np.mean([vertex.position[0] for vertex in vertices])
+        pos_y = np.mean(np.unique([vertex.position[1] for vertex in vertices]))
+        dual_graph.add_node(Plaquette(plaq_id, (pos_x, pos_y), set(plaq_vids)))
+        for vertex in vertices:
+            vertex.plaquettes.add(plaq_id)
 
-    for pid1 in dual_graph.node_indices():
-        plaq_nodes = dual_graph[pid1]
-        for n1, n2 in zip(plaq_nodes, plaq_nodes[1:] + plaq_nodes[0:1]):
-            link_id = primal_graph.edge_indices_from_endpoints(n1, n2)[0]
-            if dual_graph.filter_edges(payload_matches(link_id)):
-                # Plaquettes already linked
-                continue
-
-            neighbors = dual_graph.filter_nodes(payload_contains([n1, n2]))
-            neighbors = list(neighbors)
-            neighbors.remove(pid1)
-            if neighbors:
-                pid2 = neighbors[0]
+    # Iterate through the links in the primal graph in the original order so that edge indices
+    # in the dual graph coincides with the link ids
+    edge_index_map = primal_graph.edge_index_map()
+    for link_id in primal_graph.edge_indices():
+        vid1, vid2, link = edge_index_map[link_id]
+        # Intersection between the sets of plaquette ids surrounding the two vertices
+        plaq_ids = primal_graph[vid1].plaquettes & primal_graph[vid2].plaquettes
+        if len(plaq_ids) == 2:
+            # This link is in between two plaquettes
+            dual_graph.add_edge(plaq_ids.pop(), plaq_ids.pop(), link)
+        else:
+            # This link is at the boundary of the lattice
+            # -> Add a new dummy plaquette and an edge that connects it to the boundary plaquette
+            plaq_id = plaq_ids.pop()
+            ppos = dual_graph[plaq_id].position
+            vpos1 = primal_graph[vid1].position
+            vpos2 = primal_graph[vid2].position
+            if ((ppos[1] < vpos1[1] and ppos[1] < vpos2[1])
+                    or (ppos[1] > vpos1[1] and ppos[1] > vpos2[1])):
+                # Dummy plaquette at top or bottom
+                position = (ppos[0], 2 * vpos1[1] - ppos[1])
+            elif ppos[0] > vpos1[0] or ppos[0] > vpos2[0]:
+                # Left
+                position = (min(vpos1[0], vpos2[0]), ppos[1])
             else:
-                pid2 = dual_graph.add_node(tuple(sorted((n1, n2))) + (None,))
-
-            dual_graph.add_edge(pid1, pid2, link_id)
+                # Right
+                position = (max(vpos1[0], vpos2[0]), ppos[1])
+            dummy_id = dual_graph.add_node(
+                DummyPlaquette(position=position, vertices=set([vid1, vid2]))
+            )
+            dual_graph.add_edge(plaq_id, dummy_id, link)
 
     return dual_graph
 
 
-def make_qubit_graph(primal_graph: rx.PyGraph, dual_graph: rx.PyGraph):
+def make_qubit_graph(dual_graph: rx.PyGraph, direct_links: list[int]):
+    """Construct the qubit graph from the dual graph."""
+    direct_links = set(direct_links)
+
+    # Initialize the qubit graph from links
     qubit_graph = rx.PyGraph()
-    qubit_graph.add_nodes_from([('link', link_id) for link_id in primal_graph.edge_indices()])
-    for link_id in primal_graph.edge_indices():
-        direct_link = primal_graph.get_edge_data_by_index(link_id)
-        # Find two plaquettes this link borders
-        dual_eid = dual_graph.filter_edges(payload_matches(link_id))[0]
-        for plaq_id in dual_graph.get_edge_endpoints_by_index(dual_eid):
-            if None in dual_graph[plaq_id]:
-                # This is a dummy plaquette node at the boundary
+    qubit_ids = qubit_graph.add_nodes_from(dual_graph.edges())
+    for link, qubit_id in zip(dual_graph.edges(), qubit_ids):
+        link.logical_qubit = qubit_id
+
+    # Add plaquette qubits
+    for plaquette in dual_graph.nodes():
+        if isinstance(plaquette, DummyPlaquette):
+            continue
+        if (plaq_direct_link := set([dual_graph.incident_edges(plaquette.plaq_id)]) & direct_links):
+            # If there is a direct link surrounding this plaquette, that is the connection target
+            link_id = plaq_direct_link.pop()
+            plaquette.direct_link = dual_graph.get_edge_data_by_index(link_id)
+        else:
+            # Otherwise add a plaquette node and make it the connection target
+            qubit_id = qubit_graph.add_node(plaquette)
+            plaquette.logical_qubit = qubit_id
+
+    # Make edges from each link to the corresponding target
+    for link in dual_graph.edges():
+        if link.link_id in direct_links:
+            continue
+        for plaq_id in dual_graph.get_edge_endpoints_by_index(link.link_id):
+            plaquette = dual_graph[plaq_id]
+            if isinstance(plaquette, DummyPlaquette):
                 continue
-            # Find the other two links that form this plaquette
-            plaq_link_ids = [dual_graph.get_edge_data_by_index(eid)
-                             for eid in dual_graph.in_edge_indices(plaq_id)]
-            plaq_link_ids.remove(link_id)
-            if direct_link:
-                for plid in plaq_link_ids:
-                    qubit_graph.add_edge(link_id, plid, None)
-            elif any(primal_graph.get_edge_data_by_index(plid) for plid in plaq_link_ids):
-                # This is a linearly connected (no-ancilla) plaquette
-                continue
-            else:
-                try:
-                    plaq_node_id = qubit_graph.filter_nodes(payload_matches(('plaq', plaq_id)))[0]
-                except IndexError:
-                    plaq_node_id = qubit_graph.add_node(('plaq', plaq_id))
-                qubit_graph.add_edge(link_id, plaq_node_id, None)
+            target = plaquette.logical_qubit
+            if target is None:
+                target = plaquette.direct_link.link_id
+            qubit_graph.add_edge(link.link_id, target, None)
 
     return qubit_graph
