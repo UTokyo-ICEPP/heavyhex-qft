@@ -85,7 +85,8 @@ class TriangularZ2Lattice(PureZ2LGT):
         targets = np.empty(nump, dtype=int)
         invalid_link_id = self.num_links
         for plaquette in self.dual_graph.nodes():
-            if plaquette.logical_qubit is None and plaquette.direct_link is None:
+            if (isinstance(plaquette, DummyPlaquette)
+                    or (plaquette.logical_qubit is None and plaquette.direct_link is None)):
                 continue
 
             link_ids = self.plaquette_links(plaquette.plaq_id)
@@ -135,51 +136,65 @@ class TriangularZ2Lattice(PureZ2LGT):
             sign_angle = -1.
 
         controls, targets = self._twoq_gate_table()
-        targets = targets.tolist()
+        masks = controls >= 0
+
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
+
         if basis_2q == 'cx':
-            for control_qubits, target_qubit in zip(controls, targets):
-                cq = control_qubits[control_qubits >= 0].tolist()
-                circuit.cx(cq, target_qubit)
-                circuit.rz(angle, target_qubit)
-                circuit.cx(cq, target_qubit)
+            for control_qubits, mask in zip(controls.T, masks.T):
+                circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+            circuit.rz(angle, targets)
+            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
+                circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
 
         elif basis_2q == 'cz':
-            for control_qubits, target_qubit in zip(controls, targets):
-                cq = control_qubits[control_qubits >= 0].tolist()
-                circuit.h(target_qubit)
-                circuit.cz(cq, target_qubit)
-                circuit.rx(angle, target_qubit)
-                circuit.cz(cq, target_qubit)
-                circuit.h(target_qubit)
+            circuit.h(targets)
+            for control_qubits, mask in zip(controls.T, masks.T):
+                circuit.cz(control_qubits[mask].tolist(), targets[mask].tolist())
+            circuit.rx(angle, targets)
+            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
+                circuit.cz(control_qubits[mask].tolist(), targets[mask].tolist())
+            circuit.h(targets)
         else:
-            for control_qubits, target_qubit in zip(controls, targets):
-                cq = control_qubits[control_qubits >= 0].tolist()
-                circuit.cx(cq[:-1], target_qubit)
-                if sign_angle < 0.:
-                    # Continuous Rzz accepts positive arguments only; sandwitch with Xs
-                    circuit.x(target_qubit)
-                circuit.rzz(abs_angle, cq[-1], target_qubit)
-                if sign_angle < 0.:
-                    circuit.x(target_qubit)
-                circuit.cx(cq[:-1], target_qubit)
+            # The last positive control will be used for Rzz
+            rzz_controls = np.empty_like(targets)
+            for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
+                mask_rzz = np.all(controls[:, icol + 1:] == -1, axis=1)
+                mask_cx = mask & ~mask_rzz
+                if np.any(mask_cx):
+                    circuit.cx(control_qubits[mask_cx].tolist(), targets[mask_cx].tolist())
+                rzz_controls[mask & mask_rzz] = control_qubits[mask & mask_rzz]
+                masks[:, icol] = mask_cx
+            if sign_angle < 0.:
+                # Continuous Rzz accepts positive arguments only; sandwitch with Xs
+                circuit.x(targets)
+            circuit.rzz(abs_angle, rzz_controls, targets)
+            if sign_angle < 0.:
+                circuit.x(targets)
+            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
+                if np.any(mask):
+                    circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+
         circuit.h(range(self.num_links))
+
         return circuit
 
     def magnetic_clifford(self) -> QuantumCircuit:
         """Construct the magnetic term circuit at K*delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
         controls, targets = self._twoq_gate_table()
-        targets = targets.tolist()
+        masks = controls >= 0
+
         # Rzzz(pi/2) circuit sandwitched by Hadamards on all links
         circuit.h(range(self.num_links))
-        for control_qubits, target_qubit in zip(controls, targets):
-            cq = control_qubits[control_qubits >= 0].tolist()
-            circuit.cx(cq, target_qubit)
-            circuit.sdg(target_qubit)
-            circuit.cx(cq, target_qubit)
+        for control_qubits, mask in zip(controls.T, masks.T):
+            circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+        circuit.sdg(targets)
+        for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
+            circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
         circuit.h(range(self.num_links))
+
         return circuit
 
     def magnetic_2q_gate_counts(
@@ -189,18 +204,24 @@ class TriangularZ2Lattice(PureZ2LGT):
         """Return a list of (gate name, qubits, counts)."""
         gate_counts = defaultdict(int)
         controls, targets = self._twoq_gate_table()
-        targets = targets.tolist()
+        masks = controls >= 0
+
         if basis_2q in ['cx', 'cz']:
-            for control_qubits, target_qubit in zip(controls, targets):
-                for control_qubit in control_qubits[control_qubits >= 0].tolist():
-                    gate_counts[(basis_2q, (control_qubit, target_qubit))] += 2
+            for control_qubits, mask in zip(controls.T, masks.T):
+                for qc, qt in zip(control_qubits[mask].tolist(), targets[mask].tolist()):
+                    gate_counts[(basis_2q, (qc, qt))] += 2
 
         elif basis_2q == 'rzz':
-            for control_qubits, target_qubit in zip(controls, targets):
-                cq = control_qubits[control_qubits >= 0].tolist()
-                for control_qubit in cq[:-1]:
-                    gate_counts[('cx', (control_qubit, target_qubit))] += 2
-                gate_counts[('rzz', (cq[-1], target_qubit))] += 1
+            rzz_controls = np.empty_like(targets)
+            for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
+                mask_rzz = np.all(controls[:, icol + 1:] == -1, axis=1)
+                mask_cx = mask & ~mask_rzz
+                for qc, qt in zip(control_qubits[mask_cx].tolist(), targets[mask_cx].tolist()):
+                    gate_counts[('cx', (qc, qt))] += 2
+                rzz_controls[mask & mask_rzz] = control_qubits[mask & mask_rzz]
+
+            for qc, qt in zip(rzz_controls.tolist(), targets.tolist()):
+                gate_counts[('rzz', (qc, qt))] += 1
 
         return dict(gate_counts)
 
