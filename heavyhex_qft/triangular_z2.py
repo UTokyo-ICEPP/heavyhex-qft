@@ -243,6 +243,8 @@ def sanitize_rows(configuration: str) -> list[str]:
     while all(not row[first_column] for row in rows):
         first_column += 1
     rows = [row[first_column:] for row in rows]
+    max_row_length = max(len(row) for row in rows)
+    rows = [row + ' ' * (max_row_length - len(row)) for row in rows]
     return rows
 
 
