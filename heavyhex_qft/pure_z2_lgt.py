@@ -12,10 +12,9 @@ from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from qiskit.transpiler import CouplingMap
+from qiskit.transpiler import CouplingMap, Target
 from qiskit.quantum_info import SparsePauliOp
 from qiskit_ibm_runtime.models import BackendProperties
-from qiskit_ibm_runtime.models.exceptions import BackendPropertyError
 from .utils import as_bitarray, to_pauli_string, qubit_coordinates
 
 LOG = logging.getLogger(__name__)
@@ -261,9 +260,10 @@ class PureZ2LGT(ABC):
 
     def layout_heavy_hex(
         self,
-        coupling_map: CouplingMap,
+        coupling_map: Optional[CouplingMap] = None,
         qubit_assignment: Optional[int | dict[tuple[str, int], int]] = None,
         backend_properties: Optional[BackendProperties] = None,
+        target: Optional[Target] = None,
         basis_2q: str = 'cx'
     ) -> list[int]:
         """Return the physical qubit layout of the qubit graph using qubits in the coupling map.
@@ -277,11 +277,32 @@ class PureZ2LGT(ABC):
             qubit_assignment: Physical qubit id to assign link 0 to, or an assignment hint dict of
                 form {('link' or 'plaq', id): (physical qubit)}.
             backend_properties: Backend properties to extract the gate and readout error data from.
+            target: Backend target. If given, overrides coupling_map and backend_properties.
             basis_2q: 2-qubit gate specification for the magnetic circuit.
 
         Returns:
             List of physical qubit ids to be passed to the transpiler.
         """
+        gate_errors = {}
+        if target:
+            coupling_map = target.build_coupling_map()
+            readout_errors = [target['measure'][(iq,)].error for iq in range(target.num_qubits)]
+            for inst, qargs in target.instructions:
+                if inst.num_qubits == 2:
+                    gate_errors[(inst.name, qargs)] = target[inst.name][qargs].error
+
+        elif backend_properties:
+            readout_errors = [backend_properties.readout_error(iq)
+                              for iq in range(len(backend_properties.qubits))]
+            for gate_prop in backend_properties.gates:
+                if len(gate_prop.qubits) == 2:
+                    try:
+                        error = next(param.value for param in gate_prop.parameters
+                                     if param.name == 'gate_error')
+                    except StopIteration:
+                        error = 0.99999
+                    gate_errors[(gate_prop.gate, tuple(gate_prop.qubits))] = error
+
         cgraph = coupling_map.graph.to_undirected()
         for idx in cgraph.node_indices():
             cgraph[idx] = (idx, tuple(cgraph.neighbors(idx)))
@@ -318,21 +339,13 @@ class PureZ2LGT(ABC):
         if len(mappings) == 0:
             raise ValueError('Layout with the given qubit assignment could not be found.')
 
-        # 2Q basis gate for the backend
-        twoq_gate_name = ''
-        if backend_properties is not None:
-            twoq_gate_name = next(gate_prop.gate for gate_prop in backend_properties.gates
-                                  if gate_prop.gate in ['ecr', 'cz'])
-            LOG.info('[layout_heavy_hex] Using 2Q gate name %s to evaluate the error rates',
-                     twoq_gate_name)
-
         score_max, best_layout = None, None
         for mapping in mappings:
             layout = [None] * self.qubit_graph.num_nodes()
             for physical_qubit, logical_qubit in mapping.items():
                 layout[logical_qubit] = physical_qubit
 
-            if backend_properties is None:
+            if not gate_errors:
                 best_layout = layout
                 LOG.info('[layout_heavy_hex] Using the first layout found since no error'
                          ' information is available')
@@ -340,21 +353,17 @@ class PureZ2LGT(ABC):
 
             # Readout errors of the link qubits
             readout_fidelity = np.array(
-                [1. - min(backend_properties.readout_error(layout[qobj.logical_qubit]), 0.99999)
+                [1. - min(readout_errors[layout[qobj.logical_qubit]], 0.99999)
                  for qobj in self.qubit_graph.nodes() if isinstance(qobj, Link)]
             )
             log_error_score = np.sum(np.log(readout_fidelity))
             # 2Q gate errors
             for (gate, logical_qubits), counts in self.magnetic_2q_gate_counts(basis_2q).items():
-                if gate in ['cx', 'cz']:
-                    gate_name = twoq_gate_name
-                else:
-                    gate_name = gate  # rzz
                 qubits = tuple(layout[qubit] for qubit in logical_qubits)
                 try:
-                    gate_error = backend_properties.gate_error(gate_name, qubits)
-                except BackendPropertyError:
-                    gate_error = backend_properties.gate_error(gate_name, qubits[::-1])
+                    gate_error = gate_errors[(gate, qubits)]
+                except KeyError:
+                    gate_error = gate_errors[(gate, qubits[::-1])]
                 error = min(gate_error, 0.99999)
                 log_error_score += np.log(1. - error) * counts
             # If best score, remember the layout
