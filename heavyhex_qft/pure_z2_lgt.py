@@ -284,12 +284,18 @@ class PureZ2LGT(ABC):
             List of physical qubit ids to be passed to the transpiler.
         """
         gate_errors = {}
+        discrete_2q = None
+        has_rzz = False
         if target:
             coupling_map = target.build_coupling_map()
             readout_errors = [target['measure'][(iq,)].error for iq in range(target.num_qubits)]
             for inst, qargs in target.instructions:
                 if inst.num_qubits == 2:
                     gate_errors[(inst.name, qargs)] = target[inst.name][qargs].error
+                    if inst.name == 'rzz':
+                        has_rzz = True
+                    else:
+                        discrete_2q = inst.name
 
         elif backend_properties:
             readout_errors = [backend_properties.readout_error(iq)
@@ -302,6 +308,10 @@ class PureZ2LGT(ABC):
                     except StopIteration:
                         error = 0.99999
                     gate_errors[(gate_prop.gate, tuple(gate_prop.qubits))] = error
+                    if gate_prop.gate == 'rzz':
+                        has_rzz = True
+                    else:
+                        discrete_2q = gate_prop.gate
 
         cgraph = coupling_map.graph.to_undirected()
         for idx in cgraph.node_indices():
@@ -360,10 +370,17 @@ class PureZ2LGT(ABC):
             # 2Q gate errors
             for (gate, logical_qubits), counts in self.magnetic_2q_gate_counts(basis_2q).items():
                 qubits = tuple(layout[qubit] for qubit in logical_qubits)
+                if gate in ['cx', 'cz']:
+                    basis_gate = discrete_2q
+                elif gate == 'rzz' and has_rzz:
+                    basis_gate = 'rzz'
+                else:
+                    raise RuntimeError(f'Backend does not support {gate}')
+
                 try:
-                    gate_error = gate_errors[(gate, qubits)]
+                    gate_error = gate_errors[(basis_gate, qubits)]
                 except KeyError:
-                    gate_error = gate_errors[(gate, qubits[::-1])]
+                    gate_error = gate_errors[(basis_gate, qubits[::-1])]
                 error = min(gate_error, 0.99999)
                 log_error_score += np.log(1. - error) * counts
             # If best score, remember the layout

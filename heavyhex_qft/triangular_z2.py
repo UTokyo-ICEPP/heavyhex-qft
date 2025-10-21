@@ -156,7 +156,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
                 circuit.cz(control_qubits[mask].tolist(), targets[mask].tolist())
             circuit.h(targets)
-        else:
+        elif basis_2q == 'rzz':
             # The last positive control will be used for Rzz
             rzz_controls = np.empty_like(targets)
             for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
@@ -175,6 +175,8 @@ class TriangularZ2Lattice(PureZ2LGT):
             for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
                 if np.any(mask):
                     circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+        else:
+            raise ValueError(f'Invalid basis_2q: {basis_2q}')
 
         circuit.h(range(self.num_links))
 
