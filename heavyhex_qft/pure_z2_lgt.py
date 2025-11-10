@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import combinations, count
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 import logging
 import numpy as np
 from matplotlib.figure import Figure
@@ -15,7 +15,9 @@ from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap, Target
 from qiskit.quantum_info import SparsePauliOp
 from qiskit_ibm_runtime.models import BackendProperties
-from .utils import as_bitarray, to_pauli_string, qubit_coordinates
+from heavyhex_qft.utils import as_bitarray, to_pauli_string, qubit_coordinates
+if TYPE_CHECKING:
+    from heavyhex_qft.plaquette_dual import PlaquetteDual
 
 LOG = logging.getLogger(__name__)
 
@@ -100,9 +102,9 @@ class PureZ2LGT(ABC):
     def num_qubits(self) -> int:
         return self.qubit_graph.num_nodes()
 
-    def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None):
+    def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None) -> "PlaquetteDual":
         # pylint: disable-next=import-outside-toplevel
-        from .plaquette_dual import PlaquetteDual
+        from heavyhex_qft.plaquette_dual import PlaquetteDual
         return PlaquetteDual(self, base_link_state=base_link_state)
 
     def draw_graph(
@@ -406,9 +408,10 @@ class PureZ2LGT(ABC):
     def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
         measurement result."""
-        link_state = as_bitarray(link_state)
-        return np.array([np.sum(link_state[self.vertex_links(iv)]) % 2
-                         for iv in range(self.num_vertices)])
+        rev_link_state = as_bitarray(link_state)[::-1]
+        # Return in reverse order (vertex 0 at last bit)
+        return np.array([np.sum(rev_link_state[self.vertex_links(iv)]) % 2
+                         for iv in np.arange(self.num_vertices)[::-1]], dtype=np.uint8)
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Return the Z2 LGT Hamiltonian expressed as a SparsePauliOp.
@@ -425,20 +428,31 @@ class PureZ2LGT(ABC):
         hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
         return hamiltonian
 
-    def charge_subspace(self, vertex_charge: list[int]) -> np.ndarray:
-        """Return the dimensions of the full Hilbert space (d=2**num_link) that span the subspace
-        of the given vertex charges.
+    def charge_subspace(self, vertex_charge: np.ndarray) -> np.ndarray:
+        """Return the indices of the link states that span the subspace of the given vertex charges.
+        The vertex charges are given in the reverse order (vertex 0 at the last bit).
+
+        There can be top-down and bottom-up approaches for constructing the subspace. The top-down
+        approach would be to generate the full list of link configurations and then filter out the
+        states satisfying the vertex charge constraints. This will always require allocating an
+        array of 2**nl x nl integers, which is inpractical for nl >~ 35.
+
+        The bottom-up approach will instead start with a null bitstring and build the list of link
+        states vertex-by-vertex. The implementation is a lot more complicated in this case, but this
+        will be the most memory-efficient construction.
         """
-        if self.num_links > 64:
+        if self.num_links > 63:
             raise NotImplementedError('charge_subspace method is only available for lattices with'
-                                      ' <= 64 links')
-        if len(vertex_charge) != self.num_vertices or any(c not in (0, 1) for c in vertex_charge):
+                                      ' <= 63 links')
+        vertex_charge = np.array(vertex_charge, dtype=np.uint8)
+        if vertex_charge.shape[0] != self.num_vertices or np.any(vertex_charge > 1):
             raise ValueError(f'Argument must be a length-{self.num_vertices} list of 0 or 1')
 
         # Bit patterns of link excitations - final shape will be (subspace_dim, num_links)
-        mask_all = np.array([[False] * self.num_links])
+        # Axis 1 is ordered from link 0 to nl-1
+        mask_all = np.full((1, self.num_links), False)
         covered_lids = set()
-        for ivert, parity in enumerate(vertex_charge):
+        for ivert, parity in enumerate(vertex_charge[::-1]):
             lids = self.vertex_links(ivert)
             nl = len(lids)
 

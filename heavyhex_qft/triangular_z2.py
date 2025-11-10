@@ -7,7 +7,7 @@ from itertools import permutations
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from .pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPlaquette
+from heavyhex_qft.pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPlaquette
 
 
 class TriangularZ2Lattice(PureZ2LGT):

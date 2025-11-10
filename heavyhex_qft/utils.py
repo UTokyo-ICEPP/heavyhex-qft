@@ -5,7 +5,7 @@ from qiskit.transpiler import CouplingMap
 
 def as_bitarray(bitstr: str | np.ndarray):
     if isinstance(bitstr, str):
-        return np.array(list(map(int, bitstr[::-1])), dtype=np.uint8)
+        return np.array(list(map(int, bitstr)), dtype=np.uint8)
     return np.asarray(bitstr, dtype=np.uint8)
 
 

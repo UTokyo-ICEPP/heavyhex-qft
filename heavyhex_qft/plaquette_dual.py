@@ -5,8 +5,8 @@ import numpy as np
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.circuit import QuantumCircuit
-from .pure_z2_lgt import PureZ2LGT, DummyPlaquette
-from .utils import as_bitarray, to_pauli_string
+from heavyhex_qft.pure_z2_lgt import PureZ2LGT, DummyPlaquette
+from heavyhex_qft.utils import as_bitarray, to_pauli_string
 
 
 class PlaquetteDual:
@@ -14,9 +14,9 @@ class PlaquetteDual:
     def __init__(self, primal: PureZ2LGT, base_link_state: Optional[np.ndarray] = None):
         self.primal = primal
         if base_link_state is None:
-            self._base_link_state = np.zeros(primal.num_links)
+            self._base_link_state = np.zeros(primal.num_links, dtype=np.uint8)
         else:
-            self._base_link_state = np.array(base_link_state)
+            self._base_link_state = np.array(base_link_state, dtype=np.uint8)
 
     @property
     def graph(self) -> rx.PyGraph:
@@ -27,7 +27,11 @@ class PlaquetteDual:
         return self.primal.num_plaquettes
 
     def map_link_state(self, link_state: np.ndarray | str) -> np.ndarray:
-        """Interpret a link state as plaquette excitations with respect to the base link state."""
+        """Interpret a link state as plaquette excitations with respect to the base link state.
+
+        Users must ensure that the link excitations passed to this function form closed loops (link
+        states are in the same charge sector as the base link state).
+        """
         link_state = as_bitarray(link_state)
         if np.max(link_state) > 1 or np.min(link_state) < 0:
             raise ValueError('Non-binary link state')
@@ -35,7 +39,8 @@ class PlaquetteDual:
             raise ValueError('Number of links inconsistent with the primal graph')
 
         # Excited links are those whose states differ from the base
-        excited_links = set(np.nonzero(link_state != self._base_link_state)[0])
+        # Need link ids -> reverse the bitstring order so that numpy index i corresponds to link i
+        excited_links = set(np.nonzero(link_state[::-1] != self._base_link_state[::-1])[0])
 
         dual_graph = self.graph.copy()
         edge_index_map = dual_graph.edge_index_map()
@@ -46,6 +51,7 @@ class PlaquetteDual:
             for eid in dual_graph.incident_edges(nid):
                 nbid = next(idx for idx in edge_index_map[eid][:2] if idx != nid)
                 if isinstance(dual_graph[nbid], DummyPlaquette):
+                    # Neighbor is dummy -> nid is at boundary
                     if eid in excited_links:
                         dual_graph[nid] = (plaquette, excited)
                     else:
@@ -97,29 +103,25 @@ class PlaquetteDual:
             raise RuntimeError('No boundary patch found')
 
         # Finally compose the plaquette state
-        state = np.zeros(self.num_plaquettes, dtype=int)
+        state = np.zeros(self.num_plaquettes, dtype=np.uint8)
+        rev_state = state[::-1]
         for pid, color in coloring.items():
             if color != base_color:
                 plaq_ids = [dual_graph[nid][0].plaq_id for nid in patch_graph[pid][0]]
-                state[plaq_ids] = 1
+                rev_state[plaq_ids] = 1
 
         return state
 
-    def link_statevector_indices(self) -> np.ndarray:
-        """Return the indices of the link state vector."""
-        num_p = self.num_plaquettes
-        plaquette_links = np.array([self.graph.incident_edges(ip) for ip in range(num_p)])
-        link_bits = np.sum(1 << plaquette_links, axis=1)
-        bin_indices = (np.arange(2 ** num_p)[:, None] >> np.arange(num_p)[None, :]) % 2
-        link_indices = np.bitwise_xor.reduce(bin_indices * link_bits, axis=1)
-        link_indices ^= np.sum(1 << self._base_link_state)
-        return link_indices
-
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
-        """Construct the Hamiltonian in the plaquette basis."""
+        """Construct the Hamiltonian in the plaquette basis.
+
+        The dual (Gauss's law-resolved) Hamiltonian encodes the charge sector of the base link state
+        in the coefficients of the ZZ terms.
+        """
         num_p = self.num_plaquettes
         paulis = []
-        for nid1, nid2, _ in self.graph.edge_index_map().values():
+        coeffs = []
+        for eid, (nid1, nid2, _) in self.graph.edge_index_map().items():
             p1, p2 = self.graph[nid1], self.graph[nid2]
             if isinstance(p1, DummyPlaquette):
                 paulis.append(to_pauli_string({p2.plaq_id: 'Z'}, num_p))
@@ -127,7 +129,8 @@ class PlaquetteDual:
                 paulis.append(to_pauli_string({p1.plaq_id: 'Z'}, num_p))
             else:
                 paulis.append(to_pauli_string({p1.plaq_id: 'Z', p2.plaq_id: 'Z'}, num_p))
-        coeffs = [-1.] * len(paulis)
+            # Coeff is -1 / +1 if base link state is 0 / 1
+            coeffs.append(-1. + 2. * self._base_link_state[::-1][eid])
         paulis += [to_pauli_string({p: 'X'}, num_p) for p in range(num_p)]
         coeffs += [-plaquette_energy] * num_p
 
@@ -136,14 +139,15 @@ class PlaquetteDual:
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.num_plaquettes)
-        for nid1, nid2, _ in self.graph.edge_index_map().values():
+        for eid, (nid1, nid2, _) in self.graph.edge_index_map().values():
+            angle = (-1. + 2. * self._base_link_state[::-1][eid]) * 2. * time
             p1, p2 = self.graph[nid1], self.graph[nid2]
             if isinstance(p1, DummyPlaquette):
-                circuit.rz(-2. * time, p2.plaq_id)
+                circuit.rz(angle, p2.plaq_id)
             elif isinstance(p2, DummyPlaquette):
-                circuit.rz(-2. * time, p1.plaq_id)
+                circuit.rz(angle, p1.plaq_id)
             else:
-                circuit.rzz(-2. * time, p1.plaq_id, p2.plaq_id)
+                circuit.rzz(angle, p1.plaq_id, p2.plaq_id)
         return circuit
 
     def magnetic_evolution(self, plaquette_energy: float, time: float) -> QuantumCircuit:
