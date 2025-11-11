@@ -260,6 +260,15 @@ class PureZ2LGT(ABC):
         """Return the ids of the pair of vertices that the link connects."""
         return self.graph.edge_index_map()[link_id][:2]
 
+    def link_qubits(self) -> dict[int, int]:
+        """Return ids of logical qubits corresponding to links."""
+        return {link.link_id: link.logical_qubit for link in self.dual_graph.edges()}
+
+    def plaquette_qubits(self) -> dict[int, int]:
+        """Return ids of logical qubits corresponding to plaquettes."""
+        return {pid: self.dual_graph[pid].logical_qubit
+                for pid in self.dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette))}
+
     def layout_heavy_hex(
         self,
         coupling_map: Optional[CouplingMap] = None,
@@ -492,14 +501,13 @@ class PureZ2LGT(ABC):
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.rz(-2. * time,
-                   self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Link)))
+        circuit.rz(-2. * time, self.link_qubits())
         return circuit
 
     def electric_clifford(self) -> QuantumCircuit:
         """Construct the electric term circuit at delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.sdg(self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Link)))
+        circuit.sdg(self.link_qubits())
         return circuit
 
     @abstractmethod

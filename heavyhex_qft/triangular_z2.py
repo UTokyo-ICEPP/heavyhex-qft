@@ -48,8 +48,8 @@ class TriangularZ2Lattice(PureZ2LGT):
         self.configuration = configuration
         config_rows = sanitize_rows(configuration)
         graph, direct_links = make_primal_graph(config_rows)
-        dual_graph = make_dual_graph(graph)
-        qubit_graph = make_qubit_graph(dual_graph, direct_links)
+        dual_graph = make_dual_graph(graph, direct_links)
+        qubit_graph = make_qubit_graph(dual_graph)
         super().__init__(graph, dual_graph, qubit_graph)
 
     def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
@@ -84,17 +84,14 @@ class TriangularZ2Lattice(PureZ2LGT):
         controls = np.full((nump, 3), -1, dtype=int)
         targets = np.empty(nump, dtype=int)
         invalid_link_id = self.num_links
-        for plaquette in self.dual_graph.nodes():
-            if (isinstance(plaquette, DummyPlaquette)
-                    or (plaquette.logical_qubit is None and plaquette.direct_link is None)):
-                continue
-
-            link_ids = self.plaquette_links(plaquette.plaq_id)
+        for plaq_id in self.dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
+            plaquette = self.dual_graph[plaq_id]
+            link_ids = self.plaquette_links(plaq_id)
             if (dlink := plaquette.direct_link) is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit
-                targets[plaquette.plaq_id] = plaquette.logical_qubit
+                targets[plaq_id] = plaquette.logical_qubit
             else:
-                targets[plaquette.plaq_id] = dlink.logical_qubit
+                targets[plaq_id] = dlink.logical_qubit
                 # Remove the direct link from the list of control qubits and add a dummy index
                 link_ids.remove(dlink.link_id)
                 link_ids.append(invalid_link_id)
@@ -310,7 +307,7 @@ def make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     return graph, direct_links
 
 
-def make_dual_graph(primal_graph: rx.PyGraph) -> rx.PyGraph:
+def make_dual_graph(primal_graph: rx.PyGraph, direct_links: list[int]) -> rx.PyGraph:
     """Construct the dual graph of the lattice from the primal graph."""
     # Find the plaquettes through graph cycles of length 4
     plaquettes = set()
@@ -326,8 +323,8 @@ def make_dual_graph(primal_graph: rx.PyGraph) -> rx.PyGraph:
     for plaq_id, plaq_vids in enumerate(plaquettes):
         vertices = [primal_graph[vid] for vid in plaq_vids]
         # Position the plaquette node at the center of the rectangle that bounds the triangle
-        pos_x = np.mean([vertex.position[0] for vertex in vertices])
-        pos_y = np.mean(np.unique([vertex.position[1] for vertex in vertices]))
+        pos_x = float(np.mean([vertex.position[0] for vertex in vertices]))
+        pos_y = float(np.mean(np.unique([vertex.position[1] for vertex in vertices])))
         dual_graph.add_node(Plaquette(plaq_id, (pos_x, pos_y), set(plaq_vids)))
         for vertex in vertices:
             vertex.plaquettes.add(plaq_id)
@@ -364,13 +361,21 @@ def make_dual_graph(primal_graph: rx.PyGraph) -> rx.PyGraph:
             )
             dual_graph.add_edge(plaq_id, dummy_id, link)
 
+    # Add qubit connectivity information
+    direct_links = set(direct_links)
+    for plaquette in dual_graph.nodes():
+        if isinstance(plaquette, DummyPlaquette):
+            continue
+        if (plaq_direct_link := set(dual_graph.incident_edges(plaquette.plaq_id)) & direct_links):
+            # If there is a direct link surrounding this plaquette, set the direct_link attribute
+            link_id = plaq_direct_link.pop()
+            plaquette.direct_link = dual_graph.get_edge_data_by_index(link_id)
+
     return dual_graph
 
 
-def make_qubit_graph(dual_graph: rx.PyGraph, direct_links: list[int]):
+def make_qubit_graph(dual_graph: rx.PyGraph):
     """Construct the qubit graph from the dual graph."""
-    direct_links = set(direct_links)
-
     # Initialize the qubit graph from links
     qubit_graph = rx.PyGraph()
     qubit_ids = qubit_graph.add_nodes_from(dual_graph.edges())
@@ -378,29 +383,24 @@ def make_qubit_graph(dual_graph: rx.PyGraph, direct_links: list[int]):
         link.logical_qubit = qubit_id
 
     # Add plaquette qubits
-    for plaquette in dual_graph.nodes():
-        if isinstance(plaquette, DummyPlaquette):
-            continue
-        if (plaq_direct_link := set(dual_graph.incident_edges(plaquette.plaq_id)) & direct_links):
-            # If there is a direct link surrounding this plaquette, that is the connection target
-            link_id = plaq_direct_link.pop()
-            plaquette.direct_link = dual_graph.get_edge_data_by_index(link_id)
-        else:
-            # Otherwise add a plaquette node and make it the connection target
-            qubit_id = qubit_graph.add_node(plaquette)
-            plaquette.logical_qubit = qubit_id
+    for plaq_id in dual_graph.filter_nodes(
+            lambda node: isinstance(node, Plaquette) and node.direct_link is None):
+        # Otherwise add a plaquette node and make it the connection target
+        plaquette = dual_graph[plaq_id]
+        qubit_id = qubit_graph.add_node(plaquette)
+        plaquette.logical_qubit = qubit_id
 
-    # Make edges from each link to the corresponding target
-    for link in dual_graph.edges():
-        if link.link_id in direct_links:
-            continue
-        for plaq_id in dual_graph.get_edge_endpoints_by_index(link.link_id):
-            plaquette = dual_graph[plaq_id]
-            if isinstance(plaquette, DummyPlaquette):
-                continue
-            target = plaquette.logical_qubit
-            if target is None:
-                target = plaquette.direct_link.link_id
-            qubit_graph.add_edge(link.link_id, target, None)
+    # Make edges for each plaquette
+    for plaq_id in dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
+        plaquette = dual_graph[plaq_id]
+        if plaquette.direct_link is None:
+            for link_id in dual_graph.incident_edges(plaq_id):
+                # link_id is the logical qubit number of the link
+                qubit_graph.add_edge(link_id, plaquette.logical_qubit, None)
+        else:
+            target = plaquette.direct_link.link_id
+            for link_id in dual_graph.incident_edges(plaq_id):
+                if link_id != target:
+                    qubit_graph.add_edge(link_id, target, None)
 
     return qubit_graph
