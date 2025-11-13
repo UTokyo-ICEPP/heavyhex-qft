@@ -14,9 +14,9 @@ class PlaquetteDual:
     def __init__(self, primal: PureZ2LGT, base_link_state: Optional[np.ndarray] = None):
         self.primal = primal
         if base_link_state is None:
-            self._base_link_state = np.zeros(primal.num_links, dtype=np.uint8)
+            self.base_link_state = np.zeros(primal.num_links, dtype=np.uint8)
         else:
-            self._base_link_state = np.array(base_link_state, dtype=np.uint8)
+            self.base_link_state = np.array(base_link_state, dtype=np.uint8)
 
     @property
     def graph(self) -> rx.PyGraph:
@@ -35,12 +35,12 @@ class PlaquetteDual:
         link_state = as_bitarray(link_state)
         if np.max(link_state) > 1 or np.min(link_state) < 0:
             raise ValueError('Non-binary link state')
-        if link_state.shape[0] != self._base_link_state.shape[0]:
+        if link_state.shape[0] != self.base_link_state.shape[0]:
             raise ValueError('Number of links inconsistent with the primal graph')
 
         # Excited links are those whose states differ from the base
         # Need link ids -> reverse the bitstring order so that numpy index i corresponds to link i
-        excited_links = set(np.nonzero(link_state[::-1] != self._base_link_state[::-1])[0])
+        excited_links = set(np.nonzero(link_state[::-1] != self.base_link_state[::-1])[0])
 
         dual_graph = self.graph.copy()
         edge_index_map = dual_graph.edge_index_map()
@@ -130,7 +130,7 @@ class PlaquetteDual:
             else:
                 paulis.append(to_pauli_string({p1.plaq_id: 'Z', p2.plaq_id: 'Z'}, num_p))
             # Coeff is -1 / +1 if base link state is 0 / 1
-            coeffs.append(-1. + 2. * self._base_link_state[::-1][eid])
+            coeffs.append(-1. + 2. * self.base_link_state[::-1][eid])
         paulis += [to_pauli_string({p: 'X'}, num_p) for p in range(num_p)]
         coeffs += [-plaquette_energy] * num_p
 
@@ -140,7 +140,7 @@ class PlaquetteDual:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.num_plaquettes)
         for eid, (nid1, nid2, _) in self.graph.edge_index_map().values():
-            angle = (-1. + 2. * self._base_link_state[::-1][eid]) * 2. * time
+            angle = (-1. + 2. * self.base_link_state[::-1][eid]) * 2. * time
             p1, p2 = self.graph[nid1], self.graph[nid2]
             if isinstance(p1, DummyPlaquette):
                 circuit.rz(angle, p2.plaq_id)
