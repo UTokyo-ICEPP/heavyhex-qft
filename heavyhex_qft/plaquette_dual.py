@@ -17,6 +17,7 @@ class PlaquetteDual:
             self.base_link_state = np.zeros(primal.num_links, dtype=np.uint8)
         else:
             self.base_link_state = np.array(base_link_state, dtype=np.uint8)
+        self._base_syndrome = primal.get_syndrome(self.base_link_state)
 
     @property
     def graph(self) -> rx.PyGraph:
@@ -25,6 +26,10 @@ class PlaquetteDual:
     @property
     def num_plaquettes(self) -> int:
         return self.primal.num_plaquettes
+
+    @property
+    def base_syndrome(self) -> np.ndarray:
+        return self._base_syndrome
 
     def map_link_state(self, link_state: np.ndarray | str) -> np.ndarray:
         """Interpret a link state as plaquette excitations with respect to the base link state.
