@@ -45,7 +45,7 @@ class PlaquetteDual:
 
         # Excited links are those whose states differ from the base
         # Need link ids -> reverse the bitstring order so that numpy index i corresponds to link i
-        excited_links = set(np.nonzero(link_state[::-1] != self.base_link_state[::-1])[0])
+        excited_links = set(np.nonzero((link_state != self.base_link_state)[::-1])[0])
 
         dual_graph = self.graph.copy()
         edge_index_map = dual_graph.edge_index_map()
