@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "heavyhex-qft"
-version = "0.1.0"
+version = "0.2.0"
 authors = []
 description = "Quantum field theory on heavy-hex lattices."
 readme = "README.md"
@@ -16,6 +16,6 @@ classifiers = [
 ]
 dependencies = [
     "numpy",
-    "qiskit>1.0.0",
+    "qiskit",
     "rustworkx"
 ]
