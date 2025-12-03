@@ -46,10 +46,10 @@ class TriangularZ2Lattice(PureZ2LGT):
     """
     def __init__(self, configuration: str):
         self.configuration = configuration
-        config_rows = sanitize_rows(configuration)
-        graph, direct_links = make_primal_graph(config_rows)
-        dual_graph = make_dual_graph(graph, direct_links)
-        qubit_graph = make_qubit_graph(dual_graph)
+        config_rows = _sanitize_rows(configuration)
+        graph, direct_links = _make_primal_graph(config_rows)
+        dual_graph = _make_dual_graph(graph, direct_links)
+        qubit_graph = _make_qubit_graph(dual_graph)
         super().__init__(graph, dual_graph, qubit_graph)
 
     def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
@@ -225,7 +225,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         return dict(gate_counts)
 
 
-def sanitize_rows(configuration: str) -> list[str]:
+def _sanitize_rows(configuration: str) -> list[str]:
     """Trim whitespaces and tokenize the lattice configuration string to rows."""
     rows = configuration.split('\n')
     if any(re.search('[^ -╷╵╎*^v]', row) for row in rows):
@@ -247,7 +247,7 @@ def sanitize_rows(configuration: str) -> list[str]:
     return rows
 
 
-def make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
+def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     """Construct the primal graph of the lattice from the row-tokenized configuration string.
 
     The configuration syntax assumes that all adjacent vertices are connected and that the edges
@@ -307,7 +307,7 @@ def make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     return graph, direct_links
 
 
-def make_dual_graph(primal_graph: rx.PyGraph, direct_links: list[int]) -> rx.PyGraph:
+def _make_dual_graph(primal_graph: rx.PyGraph, direct_links: list[int]) -> rx.PyGraph:
     """Construct the dual graph of the lattice from the primal graph."""
     # Find the plaquettes through graph cycles of length 4
     plaquettes = set()
@@ -374,7 +374,7 @@ def make_dual_graph(primal_graph: rx.PyGraph, direct_links: list[int]) -> rx.PyG
     return dual_graph
 
 
-def make_qubit_graph(dual_graph: rx.PyGraph):
+def _make_qubit_graph(dual_graph: rx.PyGraph):
     """Construct the qubit graph from the dual graph."""
     # Initialize the qubit graph from links
     qubit_graph = rx.PyGraph()
@@ -385,7 +385,6 @@ def make_qubit_graph(dual_graph: rx.PyGraph):
     # Add plaquette qubits
     for plaq_id in dual_graph.filter_nodes(
             lambda node: isinstance(node, Plaquette) and node.direct_link is None):
-        # Otherwise add a plaquette node and make it the connection target
         plaquette = dual_graph[plaq_id]
         qubit_id = qubit_graph.add_node(plaquette)
         plaquette.logical_qubit = qubit_id

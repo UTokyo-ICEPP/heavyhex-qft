@@ -54,6 +54,12 @@ class DummyPlaquette:
     vertices: set[int] = field(default_factory=set)
 
 
+@dataclass
+class Ancilla:
+    """Ancilla qubit."""
+    logical_qubit: int
+
+
 class PureZ2LGT(ABC):
     r"""Base class for Z2 lattice gauge theory with static charges (gauge dof only).
 
