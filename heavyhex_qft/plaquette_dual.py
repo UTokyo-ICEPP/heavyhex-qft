@@ -144,7 +144,7 @@ class PlaquetteDual:
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.num_plaquettes)
-        for eid, (nid1, nid2, _) in self.graph.edge_index_map().values():
+        for eid, (nid1, nid2, _) in self.graph.edge_index_map().items():
             angle = (-1. + 2. * self.base_link_state[::-1][eid]) * 2. * time
             p1, p2 = self.graph[nid1], self.graph[nid2]
             if isinstance(p1, DummyPlaquette):
