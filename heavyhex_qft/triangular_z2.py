@@ -13,13 +13,16 @@ from heavyhex_qft.pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPl
 class TriangularZ2Lattice(PureZ2LGT):
     r"""Triangular lattice for pure-Z2 gauge theory.
 
-    The constructor takes a string argument representing the structure of the lattice. The string
-    should contain only characters '*', '^', 'v', ' ', and '\n', with the non-whitespace characters
-    representing the locations of the vertices. Vertices appearing in a single line are aligned
-    horizontally. There must be an odd number of whitespaces between the vertex characters.
-    Different characters represent the number of edges emanating from the vertex: '*' is a full
-    (hexagonal) vertex, and '^' and 'v' are top- and bottom-row vertices with only two edges.
-    The placement of asterisks in two consecutive lines must be staggered.
+    The constructor argument is a 2-tuple of integers or a string representing the structure of the
+    lattice. The string should contain only characters '*', '^', 'v', ' ', and '\n', with the
+    non-whitespace characters representing the locations of the vertices. Vertices appearing in a
+    single line are aligned horizontally. There must be an odd number of whitespaces between the
+    vertex characters. Different characters represent the number of edges emanating from the vertex:
+    '*' is a full (hexagonal) vertex, and '^' and 'v' are top- and bottom-row vertices with only two
+    edges. The placement of asterisks in two consecutive lines must be staggered.
+
+    When a 2-tuple is provided, it will be interpreted as a pseudo-rectangular stack of
+    (rows, columns) triangles as in the examples below.
 
     Examples:
         - Two plaquettes
@@ -43,8 +46,26 @@ class TriangularZ2Lattice(PureZ2LGT):
               * *
                *
             ''')
+        - (4, 2)
+            * *
+             * *
+            * *
+             * *
+            * *
+        - (3, 5)
+            * * * *
+             * * *
+            * * * *
+             * * *
+
     """
-    def __init__(self, configuration: str):
+    def __init__(self, configuration: tuple[int, int] | str):
+        if isinstance(configuration, tuple):
+            row_even = ' '.join(['*'] * ((configuration[1] - 1) // 2 + 2))
+            row_odd = ' ' + ' '.join(['*'] * (configuration[1] // 2 + 1))
+            configuration = '\n'.join(row_even if i % 2 == 0 else row_odd
+                                      for i in range(configuration[0] + 1))
+
         self.configuration = configuration
         config_rows = _sanitize_rows(configuration)
         graph, direct_links = _make_primal_graph(config_rows)
