@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from itertools import combinations, count
 from typing import Any, Optional, TYPE_CHECKING
 import logging
+import json
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -29,12 +30,40 @@ class Vertex:
     position: tuple[float, float]
     plaquettes: set[int] = field(default_factory=set)
 
+    def to_json_data(self):
+        return {
+            'vertex_id': json.dumps(self.vertex_id),
+            'position': json.dumps(list(self.position)),
+            'plaquettes': json.dumps(list(self.plaquettes))
+        }
+
+    @classmethod
+    def from_json_data(cls, data):
+        return Vertex(
+            vertex_id=json.loads(data['vertex_id']),
+            position=tuple(json.loads(data['position'])),
+            plaquettes=set(json.loads(data['plaquettes']))
+        )
+
 
 @dataclass
 class Link:
     """Link data."""
     link_id: int
     logical_qubit: int = -1
+
+    def to_json_data(self):
+        return {
+            'link_id': json.dumps(self.link_id),
+            'logical_qubit': json.dumps(self.logical_qubit)
+        }
+
+    @classmethod
+    def from_json_data(cls, data):
+        return Link(
+            link_id=json.loads(data['link_id']),
+            logical_qubit=json.loads(data['logical_qubit'])
+        )
 
 
 @dataclass
@@ -44,7 +73,26 @@ class Plaquette:
     position: tuple[float, float]
     vertices: set[int] = field(default_factory=set)
     logical_qubit: int | None = None
-    direct_link: Link | None = None
+    direct_link: int | None = None
+
+    def to_json_data(self):
+        return {
+            'plaq_id': json.dumps(self.plaq_id),
+            'position': json.dumps(list(self.position)),
+            'vertices': json.dumps(list(self.vertices)),
+            'logical_qubit': json.dumps(self.logical_qubit),
+            'direct_link': json.dumps(self.direct_link)
+        }
+
+    @classmethod
+    def from_json_data(cls, data):
+        return Plaquette(
+            plaq_id=json.loads(data['plaq_id']),
+            position=tuple(json.loads(data['position'])),
+            vertices=set(json.loads(data['vertices'])),
+            logical_qubit=json.loads(data['logical_qubit']),
+            direct_link=json.loads(data['direct_link'])
+        )
 
 
 @dataclass
@@ -53,11 +101,35 @@ class DummyPlaquette:
     position: tuple[float, float]
     vertices: set[int] = field(default_factory=set)
 
+    def to_json_data(self):
+        return {
+            'position': json.dumps(list(self.position)),
+            'vertices': json.dumps(list(self.vertices))
+        }
+
+    @classmethod
+    def from_json_data(cls, data):
+        return DummyPlaquette(
+            position=tuple(json.loads(data['position'])),
+            vertices=set(json.loads(data['vertices']))
+        )
+
 
 @dataclass
 class Ancilla:
     """Ancilla qubit."""
     logical_qubit: int
+
+    def to_json_data(self):
+        return {
+            'logical_qubit': json.dumps(self.logical_qubit)
+        }
+
+    @classmethod
+    def from_json_data(cls, data):
+        return Plaquette(
+            logical_qubit=json.loads(data['logical_qubit'])
+        )
 
 
 class PureZ2LGT(ABC):
