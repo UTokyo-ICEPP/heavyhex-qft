@@ -4,6 +4,7 @@ from collections import defaultdict
 from numbers import Number
 import re
 from itertools import permutations
+from typing import Optional
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
@@ -59,16 +60,24 @@ class TriangularZ2Lattice(PureZ2LGT):
              * * *
 
     """
-    def __init__(self, configuration: tuple[int, int] | str):
-        if isinstance(configuration, tuple):
-            row_even = ' '.join(['*'] * ((configuration[1] - 1) // 2 + 2))
-            row_odd = ' ' + ' '.join(['*'] * (configuration[1] // 2 + 1))
-            configuration = '\n'.join(row_even if i % 2 == 0 else row_odd
-                                      for i in range(configuration[0] + 1))
+    def __init__(
+        self,
+        configuration: tuple[int, int] | str | rx.PyGraph,
+        direct_links: Optional[list[int]] = None
+    ):
+        if isinstance(configuration, rx.PyGraph):
+            graph = configuration.copy()  # TODO copy() returns a shallow copy. Is this dangerous?
+            direct_links = direct_links or []
+        else:
+            if isinstance(configuration, tuple):
+                row_even = ' '.join(['*'] * ((configuration[1] - 1) // 2 + 2))
+                row_odd = ' ' + ' '.join(['*'] * (configuration[1] // 2 + 1))
+                configuration = '\n'.join(row_even if i % 2 == 0 else row_odd
+                                        for i in range(configuration[0] + 1))
 
-        self.configuration = configuration
-        config_rows = _sanitize_rows(configuration)
-        graph, direct_links = _make_primal_graph(config_rows)
+            self.configuration = configuration
+            graph, direct_links = make_primal_graph(configuration)
+
         dual_graph = _make_dual_graph(graph, direct_links)
         qubit_graph = _make_qubit_graph(dual_graph)
         super().__init__(graph, dual_graph, qubit_graph)
@@ -108,10 +117,11 @@ class TriangularZ2Lattice(PureZ2LGT):
         for plaq_id in self.dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
             plaquette = self.dual_graph[plaq_id]
             link_ids = self.plaquette_links(plaq_id)
-            if (dlink := plaquette.direct_link) is None:
+            if plaquette.direct_link is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit
                 targets[plaq_id] = plaquette.logical_qubit
             else:
+                dlink = self.dual_graph.get_edge_data_by_index(plaquette.direct_link)
                 targets[plaq_id] = dlink.logical_qubit
                 # Remove the direct link from the list of control qubits and add a dummy index
                 link_ids.remove(dlink.link_id)
@@ -244,6 +254,10 @@ class TriangularZ2Lattice(PureZ2LGT):
                 gate_counts[('rzz', (qc, qt))] += 1
 
         return dict(gate_counts)
+
+
+def make_primal_graph(configuration: str) -> tuple[rx.PyGraph, list[int]]:
+    return _make_primal_graph(_sanitize_rows(configuration))
 
 
 def _sanitize_rows(configuration: str) -> list[str]:
@@ -389,8 +403,7 @@ def _make_dual_graph(primal_graph: rx.PyGraph, direct_links: list[int]) -> rx.Py
             continue
         if (plaq_direct_link := set(dual_graph.incident_edges(plaquette.plaq_id)) & direct_links):
             # If there is a direct link surrounding this plaquette, set the direct_link attribute
-            link_id = plaq_direct_link.pop()
-            plaquette.direct_link = dual_graph.get_edge_data_by_index(link_id)
+            plaquette.direct_link = plaq_direct_link.pop()
 
     return dual_graph
 
@@ -413,12 +426,11 @@ def _make_qubit_graph(dual_graph: rx.PyGraph):
     # Make edges for each plaquette
     for plaq_id in dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
         plaquette = dual_graph[plaq_id]
-        if plaquette.direct_link is None:
+        if (target := plaquette.direct_link) is None:
             for link_id in dual_graph.incident_edges(plaq_id):
                 # link_id is the logical qubit number of the link
                 qubit_graph.add_edge(link_id, plaquette.logical_qubit, None)
         else:
-            target = plaquette.direct_link.link_id
             for link_id in dual_graph.incident_edges(plaq_id):
                 if link_id != target:
                     qubit_graph.add_edge(link_id, target, None)

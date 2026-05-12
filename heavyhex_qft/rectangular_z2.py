@@ -120,6 +120,10 @@ class RectangularZ2Lattice(PureZ2LGT):
         return dict(gate_counts)
 
 
+def make_primal_and_dual_graphs(configuration: str) -> tuple[rx.PyGraph, rx.PyGraph]:
+    return _make_primal_and_dual_graphs(_sanitize_rows(configuration))
+
+
 def _sanitize_rows(configuration: str) -> list[str]:
     """Trim whitespaces and tokenize the lattice configuration string to rows."""
     config_rows = configuration.split('\n')
