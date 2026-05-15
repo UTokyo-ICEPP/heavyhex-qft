@@ -39,8 +39,21 @@ class RectangularZ2Lattice(PureZ2LGT):
             config_rows = _sanitize_rows(configuration)
 
         graph, dual_graph = _make_primal_and_dual_graphs(config_rows)
-        qubit_graph = _make_qubit_graph(dual_graph)
-        super().__init__(graph, dual_graph, qubit_graph)
+        super().__init__(graph, dual_graph)
+
+    def _connect_qubit_graph(self):
+        # Add plaquette qubits
+        for plaquette in self.graph.attrs['plaquettes']:
+            plaq_qubit = self.qubit_graph.add_node(plaquette)
+            node = self.dual_graph.find_node_by_weight(plaquette)
+            links = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
+            links = sorted(links, key=lambda l: l.link_id)
+            for link_pair in [links[:2], links[2:]]:
+                ancilla_qubit = self.qubit_graph.add_node(Ancilla())
+                self.qubit_graph.add_edge(ancilla_qubit, plaq_qubit, None)
+                for link in link_pair:
+                    link_qubit = self.qubit_graph.find_node_by_weight(link)
+                    self.qubit_graph.add_edge(ancilla_qubit, link_qubit, None)
 
     def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
         pass
@@ -118,7 +131,7 @@ class RectangularZ2Lattice(PureZ2LGT):
                 gate_counts[('cx', (anc, plaq))] += 2
 
         return dict(gate_counts)
-
+    
 
 def make_primal_and_dual_graphs(configuration: str) -> tuple[rx.PyGraph, rx.PyGraph]:
     return _make_primal_and_dual_graphs(_sanitize_rows(configuration))
@@ -211,30 +224,3 @@ def _make_primal_and_dual_graphs(config_rows: list[str]) -> tuple[rx.PyGraph, rx
             dual_graph.add_edge(plaq_id, dummy_id, link)
 
     return primal_graph, dual_graph
-
-
-def _make_qubit_graph(dual_graph: rx.PyGraph) -> rx.PyGraph:
-    """Construct the qubit graph from the dual graph."""
-    qubit_graph = rx.PyGraph()
-    qubit_ids = qubit_graph.add_nodes_from(dual_graph.edges())
-    for link, qubit_id in zip(dual_graph.edges(), qubit_ids):
-        link.logical_qubit = qubit_id
-
-    # Add plaquette qubits
-    for plaq_id in dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
-        plaquette = dual_graph[plaq_id]
-        qubit_id = qubit_graph.add_node(plaquette)
-        plaquette.logical_qubit = qubit_id
-
-    # Add edges and ancilla qubits
-    for plaq_id in dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
-        plaquette = dual_graph[plaq_id]
-        link_ids = sorted(dual_graph.incident_edges(plaq_id))
-        for link_pair in [link_ids[:2], link_ids[2:]]:
-            qubit_id = qubit_graph.add_node(None)
-            qubit_graph[qubit_id] = Ancilla(qubit_id)
-            qubit_graph.add_edge(qubit_id, plaquette.logical_qubit, None)
-            qubit_graph.add_edge(qubit_id, link_pair[0], None)
-            qubit_graph.add_edge(qubit_id, link_pair[1], None)
-
-    return qubit_graph

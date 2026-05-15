@@ -50,19 +50,16 @@ class Vertex:
 class Link:
     """Link data."""
     link_id: int
-    logical_qubit: int = -1
 
     def to_json_data(self):
         return {
-            'link_id': json.dumps(self.link_id),
-            'logical_qubit': json.dumps(self.logical_qubit)
+            'link_id': json.dumps(self.link_id)
         }
 
     @classmethod
     def from_json_data(cls, data):
         return Link(
-            link_id=json.loads(data['link_id']),
-            logical_qubit=json.loads(data['logical_qubit'])
+            link_id=json.loads(data['link_id'])
         )
 
 
@@ -72,16 +69,12 @@ class Plaquette:
     plaq_id: int
     position: tuple[float, float]
     vertices: set[int] = field(default_factory=set)
-    logical_qubit: int | None = None
-    direct_link: int | None = None
 
     def to_json_data(self):
         return {
             'plaq_id': json.dumps(self.plaq_id),
             'position': json.dumps(list(self.position)),
-            'vertices': json.dumps(list(self.vertices)),
-            'logical_qubit': json.dumps(self.logical_qubit),
-            'direct_link': json.dumps(self.direct_link)
+            'vertices': json.dumps(list(self.vertices))
         }
 
     @classmethod
@@ -89,9 +82,7 @@ class Plaquette:
         return Plaquette(
             plaq_id=json.loads(data['plaq_id']),
             position=tuple(json.loads(data['position'])),
-            vertices=set(json.loads(data['vertices'])),
-            logical_qubit=json.loads(data['logical_qubit']),
-            direct_link=json.loads(data['direct_link'])
+            vertices=set(json.loads(data['vertices']))
         )
 
 
@@ -118,18 +109,13 @@ class DummyPlaquette:
 @dataclass
 class Ancilla:
     """Ancilla qubit."""
-    logical_qubit: int
 
     def to_json_data(self):
-        return {
-            'logical_qubit': json.dumps(self.logical_qubit)
-        }
+        return {}
 
     @classmethod
     def from_json_data(cls, data):
-        return Plaquette(
-            logical_qubit=json.loads(data['logical_qubit'])
-        )
+        return Ancilla()
 
 
 class PureZ2LGT(ABC):
@@ -156,17 +142,26 @@ class PureZ2LGT(ABC):
     ancillas should have L+A+P nodes, with the first L representing the links, next A representing
     the ancillas, and the last P as the plaquettes.
     """
-    def __init__(self, graph: rx.PyGraph, dual_graph: rx.PyGraph, qubit_graph: rx.PyGraph):
+    def __init__(self, graph: rx.PyGraph, dual_graph: rx.PyGraph):
         self.graph = graph
         self.dual_graph = dual_graph
-        self.qubit_graph = qubit_graph
+        self._make_qubit_graph()
 
         # Cached vertex parity
         self._vertex_parity = None
 
+    def _make_qubit_graph(self):
+        self.qubit_graph = rx.PyGraph()
+        self.qubit_graph.add_nodes_from(self.graph.edges())
+        self._connect_qubit_graph()
+
+    @abstractmethod
+    def _connect_qubit_graph(self):
+        """Add plaquette qubits and define the qubit connections."""
+
     @property
     def num_plaquettes(self) -> int:
-        return len(self.dual_graph.filter_nodes(lambda p: isinstance(p, Plaquette)))
+        return len(self.graph.attrs['plaquettes'])
 
     @property
     def num_links(self) -> int:
@@ -191,7 +186,7 @@ class PureZ2LGT(ABC):
         links: Optional[Sequence[int]] = None,
         ax: Optional[Axes] = None
     ) -> Figure:
-        kwargs = {'labels': str, 'edge_labels': str,
+        kwargs = {'labels': lambda v: str(v.vertex_id), 'edge_labels': lambda l: str(l.link_id),
                   'pos': {vertex.vertex_id: vertex.position for vertex in self.graph.nodes()}}
         if vertices is not None:
             kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
@@ -207,12 +202,7 @@ class PureZ2LGT(ABC):
             for il in links:
                 kwargs['edge_color'][il] = 'r'
 
-        graph = rx.PyGraph()
-        graph.add_nodes_from(range(self.graph.num_nodes()))
-        for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
-            graph.add_edge(n1, n2, link_id)
-
-        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        fig = rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
         # overwritten in the function
         if fig is None:
@@ -229,17 +219,12 @@ class PureZ2LGT(ABC):
             return fig
 
     def draw_dual_graph(self, ax: Optional[Axes] = None) -> Figure:
-        kwargs = {'labels': str, 'edge_labels': str,
-                  'pos': {nid: self.dual_graph[nid].position
-                          for nid in self.dual_graph.node_indices()}}
+        kwargs = {'labels': lambda p: str(p.plaq_id) if isinstance(p, Plaquette) else '',
+                  'edge_labels': lambda l: str(l.link_id),
+                  'pos': {node: self.dual_graph[node].position
+                          for node in self.dual_graph.node_indices()}}
 
-        graph = rx.PyGraph()
-        graph.add_nodes_from(range(self.num_plaquettes))
-        graph.add_nodes_from([''] * (self.dual_graph.num_nodes() - self.num_plaquettes))
-        for link_id, (n1, n2, _) in self.dual_graph.edge_index_map().items():
-            graph.add_edge(n1, n2, link_id)
-
-        fig = rx.visualization.mpl_draw(graph, ax=ax, with_labels=True, **kwargs)
+        fig = rx.visualization.mpl_draw(self.dual_graph, ax=ax, with_labels=True, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
         # overwritten in the function
         if fig is None:
@@ -323,12 +308,15 @@ class PureZ2LGT(ABC):
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of ids of the links surrounding the plaquette."""
-        return list(self.dual_graph.incident_edges(plaq_id))
+        plaquette = self.graph.attrs['plaquettes'][plaq_id]
+        node = self.dual_graph.find_node_by_weight(plaquette)
+        edge_index_map = self.dual_graph.incident_edge_index_map(node)
+        return list(val[2].link_id for val in edge_index_map.values())
 
     def link_plaquettes(self, link_id: int) -> list[int]:
         """Return the list (size 1 or 2) of ids of the plaquettes that have the link as an edge."""
-        nids = self.dual_graph.edge_index_map()[link_id][:2]
-        return [nid for nid in nids if isinstance(self.dual_graph[nid], Plaquette)]
+        vid1, vid2 = self.link_vertices(link_id)
+        return list(self.graph[vid1].plaquettes & self.graph[vid2].plaquettes)
 
     def vertex_links(self, vertex_id: int) -> list[int]:
         """Return the list of ids of the links incident on the vertex."""
@@ -340,12 +328,37 @@ class PureZ2LGT(ABC):
 
     def link_qubits(self) -> dict[int, int]:
         """Return ids of logical qubits corresponding to links."""
-        return {link.link_id: link.logical_qubit for link in self.dual_graph.edges()}
+        return {data.link_id: iq for iq, data in enumerate(self.qubit_graph.nodes())
+                if isinstance(data, Link)}
 
     def plaquette_qubits(self) -> dict[int, int]:
         """Return ids of logical qubits corresponding to plaquettes."""
-        return {pid: self.dual_graph[pid].logical_qubit
-                for pid in self.dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette))}
+        return {data.plaq_id: iq for iq, data in enumerate(self.qubit_graph.nodes())
+                if isinstance(data, Plaquette)}
+
+    def remove_vertex(self, vertex_id: int):
+        for plaq_id in self.graph[vertex_id].plaquettes:
+            # Remove the plaquette from attrs
+            plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
+            # Replace it with a dummy in dual_graph
+            node = self.dual_graph.find_node_by_weight(plaquette)
+            edge_index_map = self.dual_graph.incident_edge_index_map(node)
+            self.dual_graph.remove_node(node)
+            dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
+            node = self.dual_graph.add_node(dummy)
+            for _, target, link in edge_index_map.values():
+                if isinstance(self.dual_graph[target], Plaquette):
+                    self.dual_graph.add_edge(target, node, link)
+
+        # Remove the vertex from the primal graph
+        self.graph.remove_node(vertex_id)
+
+        for lid in self.graph.edge_indices():
+            if not self.link_plaquettes(lid):
+                raise ValueError(f'Link {lid} has been isolated by the removal of vertex'
+                                 f' {vertex_id}. Isolated links do not participate in dynamics.')
+            
+        self._make_qubit_graph()
 
     def layout_heavy_hex(
         self,
@@ -494,11 +507,13 @@ class PureZ2LGT(ABC):
 
     def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
-        measurement result."""
-        rev_link_state = as_bitarray(link_state)[::-1]
+        measurement result.
+        """
+        rev_link_state = np.zeros(self.graph.attrs['max_link_id'] + 1, dtype=np.uint8)
+        rev_link_state[self.graph.edge_indices()] = as_bitarray(link_state)[::-1]
         # Return in reverse order (vertex 0 at last bit)
-        return np.array([np.sum(rev_link_state[self.vertex_links(iv)]) % 2
-                         for iv in np.arange(self.num_vertices)[::-1]], dtype=np.uint8)
+        return np.array([np.sum(rev_link_state[self.vertex_links(v.vertex_id)]) % 2
+                         for v in self.graph.nodes()[::-1]], dtype=np.uint8)
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Return the Z2 LGT Hamiltonian expressed as a SparsePauliOp.
@@ -506,11 +521,14 @@ class PureZ2LGT(ABC):
         The lengths of the Pauli strings equal the number of links in the lattice, not the number
         of qubits.
         """
-        link_terms = [to_pauli_string({lid: 'Z'}, self.num_links)
-                      for lid in self.graph.edge_indices()]
-        plaquette_terms = [to_pauli_string({lid: 'X' for lid in self.plaquette_links(plid)},
-                                           self.num_links)
-                           for plid in range(self.num_plaquettes)]
+        nq = self.num_links
+        link_id_to_iq = {link_id: iq for iq, link_id in enumerate(self.graph.edge_indices())}
+        link_terms = [to_pauli_string({iq: 'Z'}, nq) for iq in link_id_to_iq.values()]
+        plaquette_terms = []
+        for plaq_id in self.graph.attrs['plaquettes']:
+            iqs = [link_id_to_iq[lid] for lid in self.plaquette_links(plaq_id)]
+            plaquette_terms.append(to_pauli_string({iq: 'X' for iq in iqs}, nq))
+                           
         hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
         hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
         return hamiltonian
@@ -579,13 +597,13 @@ class PureZ2LGT(ABC):
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.rz(-2. * time, self.link_qubits())
+        circuit.rz(-2. * time, self.link_qubits().values())
         return circuit
 
     def electric_clifford(self) -> QuantumCircuit:
         """Construct the electric term circuit at delta_t = pi/4."""
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        circuit.sdg(self.link_qubits())
+        circuit.sdg(self.link_qubits().values())
         return circuit
 
     @abstractmethod
