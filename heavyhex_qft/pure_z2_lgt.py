@@ -161,22 +161,10 @@ class PureZ2LGT(ABC):
     ancillas should have L+A+P nodes, with the first L representing the links, next A representing
     the ancillas, and the last P as the plaquettes.
     """
-    def __init__(self, graph: rx.PyGraph, dual_graph: rx.PyGraph):
+    def __init__(self, graph: rx.PyGraph):
         self.graph = graph
-        self.dual_graph = dual_graph
+        self._make_dual_graph()
         self._make_qubit_graph()
-
-        # Cached vertex parity
-        self._vertex_parity = None
-
-    def _make_qubit_graph(self):
-        self.qubit_graph = rx.PyGraph()
-        self.qubit_graph.add_nodes_from(self.graph.edges())
-        self._connect_qubit_graph()
-
-    @abstractmethod
-    def _connect_qubit_graph(self):
-        """Add plaquette qubits and define the qubit connections."""
 
     @property
     def num_plaquettes(self) -> int:
@@ -198,6 +186,9 @@ class PureZ2LGT(ABC):
         # pylint: disable-next=import-outside-toplevel
         from heavyhex_qft.plaquette_dual import PlaquetteDual
         return PlaquetteDual(self, base_link_state=base_link_state)
+
+    def to_json(self) -> str:
+        pass
 
     def draw_graph(
         self,
@@ -272,7 +263,7 @@ class PureZ2LGT(ABC):
 
         if not plt.isinteractive() or ax is None:
             return fig
-        
+
     def draw_qubit_graph(
         self,
         layout: Optional[list[int]] = None,
@@ -280,12 +271,12 @@ class PureZ2LGT(ABC):
     ) -> Figure | None:
         qgraph = rx.PyGraph()
         qgraph.add_nodes_from(enumerate(self.qubit_graph.nodes()))
-        qgraph.add_edges_from(self.qubit_graph.edge_index_map().values())
+        qgraph.add_edges_from(self.qubit_graph.weighted_edge_list())
 
         kwargs = {'font_size': 6, 'font_color': 'w', 'node_shape': 's', 'node_color': '#034c3c',
                   'node_size': 440, 'width': 5., 'edge_color': 'r',
                   'pos': {lq: qobj.position for lq, qobj in enumerate(self.qubit_graph.nodes())}}
-                  
+
         if layout:
             kwargs['labels'] = lambda p: f'{p[0]}\nq{layout[p[0]]}\n{p[1].label}'
         else:
@@ -311,7 +302,7 @@ class PureZ2LGT(ABC):
     ) -> Figure:
         cgraph = rx.PyGraph(multigraph=False)
         cgraph.add_nodes_from(coupling_map.graph.node_indices())
-        cgraph.add_edges_from(coupling_map.graph.edge_index_map().values())
+        cgraph.add_edges_from(coupling_map.graph.weighted_edge_list())
 
         selected_links = set(links or [])
         selected_plaquettes = set(plaquettes or [])
@@ -364,8 +355,7 @@ class PureZ2LGT(ABC):
         """Return the list of ids of the links surrounding the plaquette."""
         plaquette = self.graph.attrs['plaquettes'][plaq_id]
         node = self.dual_graph.find_node_by_weight(plaquette)
-        edge_index_map = self.dual_graph.incident_edge_index_map(node)
-        return list(val[2].id for val in edge_index_map.values())
+        return list(val[2].id for val in self.dual_graph.in_edges(node))
 
     def link_plaquettes(self, link_id: int) -> list[int]:
         """Return the list (size 1 or 2) of ids of the plaquettes that have the link as an edge."""
@@ -391,8 +381,11 @@ class PureZ2LGT(ABC):
                 if isinstance(data, Plaquette)}
 
     def remove_vertex(self, vertex_id: int):
-        for plaq_id in self.graph[vertex_id].plaquettes:
-            self._pop_plaquette(plaq_id)
+        vertex = self.graph[vertex_id]
+        for plaq_id in vertex.plaquettes:
+            self.graph.attrs['plaquettes'].pop(plaq_id)
+        for neighbor in self.graph.neighbors(vertex_id):
+            self.graph[neighbor].plaquettes -= vertex.plaquettes
         # Remove the vertex from the primal graph
         self.graph.remove_node(vertex_id)
         # Validate the graph
@@ -400,43 +393,28 @@ class PureZ2LGT(ABC):
             if not self.link_plaquettes(lid):
                 raise ValueError(f'Link {lid} has been isolated by the removal of vertex'
                                  f' {vertex_id}. Isolated links do not participate in dynamics.')
-        # Remake the qubit graph
+        # Remake the dual and qubit graphs
+        self._make_dual_graph()
         self._make_qubit_graph()
 
     def remove_plaquette(self, plaq_id: int):
-        plaquette = self._pop_plaquette(plaq_id)
-        # Remove invalidated links
-        dual_graph_links = set(link.id for link in self.dual_graph.edges())
-        graph_links = set(self.graph.edge_indices())
-        for link_id in graph_links - dual_graph_links:
-            self.graph.remove_edge_from_index(link_id)
-        # Remove the reference to the plaquette from the vertices
-        for vertex_id in plaquette.vertices:
-            vertex = self.graph[vertex_id]
-            vertex.plaquettes.remove(plaquette.id)
-            if not vertex.plaquettes:
-                # This vertex becomes isolated
-                self.graph.remove_node(vertex_id)
-        # Remake the qubit graph
-        self._make_qubit_graph()
-
-    def _pop_plaquette(self, plaq_id: int):
-        # Remove the plaquette from attrs
         plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
-        # Replace it with a dummy in dual_graph
+        # Remove plaquette references from bounding vertices
+        for vertex_id in plaquette.vertices:
+            self.graph[vertex_id].plaquettes.remove(plaq_id)
+        # If the plaquette is connected to a dummy in the dual, remove the link
         node = self.dual_graph.find_node_by_weight(plaquette)
         for neighbor in self.dual_graph.neighbors(node):
             if isinstance(self.dual_graph[neighbor], DummyPlaquette):
-                self.dual_graph.remove_node(neighbor)
-        edge_index_map = self.dual_graph.incident_edge_index_map(node)
-        self.dual_graph.remove_node(node)
-        for _, target, link in edge_index_map.values():
-            if isinstance(self.dual_graph[target], Plaquette):
-                dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
-                node = self.dual_graph.add_node(dummy)
-                self.dual_graph.add_edge(target, node, link)
-
-        return plaquette
+                link = self.dual_graph.get_edge_data(node, neighbor)
+                self.graph.remove_edge_from_index(link.id)
+        # Remove isolated vertices
+        for vertex_id in plaquette.vertices:
+            if len(self.graph.neighbors(vertex_id)) == 0:
+                self.graph.remove_node(vertex_id)
+        # Remake the dual and qubit graphs
+        self._make_dual_graph()
+        self._make_qubit_graph()
 
     def layout_heavy_hex(
         self,
@@ -499,7 +477,7 @@ class PureZ2LGT(ABC):
 
         cgraph = rx.PyGraph(multigraph=False)
         cgraph.add_nodes_from(coupling_map.graph.node_indices())
-        cgraph.add_edges_from(coupling_map.graph.edge_index_map().values())
+        cgraph.add_edges_from(coupling_map.graph.weighted_edge_list())
 
         if qubit_assignment is None:
             LOG.info('[layout_heavy_hex] qubit_assignment not given. Using all candidates.')
@@ -526,10 +504,10 @@ class PureZ2LGT(ABC):
                 qubits[0].append(logical_qubits[0])
                 qubits[1].append(logical_qubits[1])
                 counts.append(nop)
-            
+
             gate_qubits[gate] = qubits
             gate_counts[gate] = np.array(counts)
-        
+
         link_logical_qubits = [lq for lq, qobj in enumerate(self.qubit_graph.nodes())
                                if isinstance(qobj, Link)]
 
@@ -537,7 +515,7 @@ class PureZ2LGT(ABC):
         for mapping in mappings:
             layout = np.empty(self.qubit_graph.num_nodes(), dtype=int)
             for pq, lq in mapping.items():
-                layout[lq] = pq 
+                layout[lq] = pq
 
             if not gate_errors:
                 best_layout = layout.tolist()
@@ -552,7 +530,7 @@ class PureZ2LGT(ABC):
                 physical_qubits = (layout[qlists[0]], layout[qlists[1]])
                 error_score += np.sum(np.log(1. - gate_errors[gate][physical_qubits])
                                       * gate_counts[gate])
-            
+
             # If best score, remember the layout
             if score_max is None or error_score > score_max:
                 score_max = error_score
@@ -606,7 +584,7 @@ class PureZ2LGT(ABC):
         will be the most memory-efficient construction.
         """
         raise NotImplementedError('charge_subspace is not maintained any more')
-    
+
         if self.num_links > 63:
             raise NotImplementedError('charge_subspace method is only available for lattices with'
                                       ' <= 63 links')
@@ -687,14 +665,43 @@ class PureZ2LGT(ABC):
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
 
+    def _make_dual_graph(self):
+        """Construct the dual graph of the lattice from the primal graph."""
+        plaquettes = self.graph.attrs['plaquettes']
+        # Initialze the dual graph with plaquette nodes.
+        self.dual_graph = rx.PyGraph()
+        self.dual_graph.add_nodes_from(plaquettes.values())
 
-def payload_matches(value: Any):
-    def match(payload):
-        return payload == value
-    return match
+        # Iterate through the links in the primal graph in the original order so that edge indices
+        # in the dual graph coincides with the link ids
+        for vid1, vid2, link in self.graph.weighted_edge_list():
+            # Intersection between the sets of plaquette ids surrounding the two vertices
+            link_plaquettes = [plaquettes[pid]
+                               for pid in self.graph[vid1].plaquettes & self.graph[vid2].plaquettes]
+            if len(link_plaquettes) == 2:
+                # This link is in between two plaquettes
+                self.dual_graph.add_edge(self.dual_graph.find_node_by_weight(link_plaquettes[0]),
+                                         self.dual_graph.find_node_by_weight(link_plaquettes[1]),
+                                         link)
+            else:
+                # This link is at the boundary of the lattice
+                # -> Add a new dummy with an edge connecting it to the boundary plaquette
+                ppos = np.array(link_plaquettes[0].position)
+                vpos1 = np.array(self.graph[vid1].position)
+                vpos2 = np.array(self.graph[vid2].position)
+                link_center = (vpos1 + vpos2) * 0.5
+                position = tuple(2. * link_center - ppos)
+                dummy_id = self.dual_graph.add_node(
+                    DummyPlaquette(position=position, vertices={vid1, vid2})
+                )
+                self.dual_graph.add_edge(self.dual_graph.find_node_by_weight(link_plaquettes[0]),
+                                         dummy_id, link)
 
+    def _make_qubit_graph(self):
+        self.qubit_graph = rx.PyGraph()
+        self.qubit_graph.add_nodes_from(self.graph.edges())
+        self._connect_qubit_graph()
 
-def payload_contains(values: Any):
-    def contains(payload):
-        return all(value in payload for value in values)
-    return contains
+    @abstractmethod
+    def _connect_qubit_graph(self):
+        """Add plaquette qubits and define the qubit connections."""

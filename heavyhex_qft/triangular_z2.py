@@ -73,11 +73,9 @@ class TriangularZ2Lattice(PureZ2LGT):
                 configuration = '\n'.join(row_even if i % 2 == 0 else row_odd
                                         for i in range(configuration[0] + 1))
 
-            self.configuration = configuration
             graph = make_primal_graph(configuration)
 
-        dual_graph = _make_dual_graph(graph)
-        super().__init__(graph, dual_graph)
+        super().__init__(graph)
 
     def _connect_qubit_graph(self):
         # Add plaquette qubits and connect the qubit nodes
@@ -185,7 +183,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         if basis_2q[:2] == 'cz':
             # Transform CZ to CX
             circuit.h(gate_table.keys())
-                
+
         for iop in range(3):
             controls = [cs[iop] for t, cs in gate_table.items()
                         if iop != last_controls[t] and cs[iop] != -1]
@@ -195,7 +193,7 @@ class TriangularZ2Lattice(PureZ2LGT):
                     circuit.cx(controls, targets)
                 else:
                     circuit.cz(controls, targets)
-            
+
             controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
             if controls:
                 targets = [t for t in gate_table if iop == last_controls[t]]
@@ -270,14 +268,14 @@ class TriangularZ2Lattice(PureZ2LGT):
                              for t, cs in gate_table.items()}
         else:
             last_controls = {t: -1 for t in gate_table}
-                
+
         for iop in range(3):
             controls = [cs[iop] for t, cs in gate_table.items()
                         if iop != last_controls[t] and cs[iop] != -1]
             targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
             for c, t in zip(controls, targets):
                 gate_counts[basis_2q[:2]][(c, t)] += 2
-            
+
             controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
             targets = [t for t in gate_table if iop == last_controls[t]]
             for c, t in zip(controls, targets):
@@ -287,7 +285,9 @@ class TriangularZ2Lattice(PureZ2LGT):
 
 
 def make_primal_graph(configuration: str) -> tuple[rx.PyGraph, list[int]]:
-    return _make_primal_graph(_sanitize_rows(configuration))
+    graph = _make_primal_graph(_sanitize_rows(configuration))
+    graph.attrs['configuration'] = configuration
+    return graph
 
 
 def _sanitize_rows(configuration: str) -> list[str]:
@@ -408,44 +408,3 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
             graph.attrs['joint_link'][plaq_id] = link_id
 
     return graph
-
-
-def _make_dual_graph(primal_graph: rx.PyGraph) -> rx.PyGraph:
-    """Construct the dual graph of the lattice from the primal graph."""
-    # Initialze the dual graph with plaquette nodes.
-    dual_graph = rx.PyGraph()
-    dual_graph.add_nodes_from(primal_graph.attrs['plaquettes'].values())
-
-    # Iterate through the links in the primal graph in the original order so that edge indices
-    # in the dual graph coincides with the link ids
-    edge_index_map = primal_graph.edge_index_map()
-    for link_id in primal_graph.edge_indices():
-        vid1, vid2, link = edge_index_map[link_id]
-        # Intersection between the sets of plaquette ids surrounding the two vertices
-        plaq_ids = primal_graph[vid1].plaquettes & primal_graph[vid2].plaquettes
-        if len(plaq_ids) == 2:
-            # This link is in between two plaquettes
-            dual_graph.add_edge(plaq_ids.pop(), plaq_ids.pop(), link)
-        else:
-            # This link is at the boundary of the lattice
-            # -> Add a new dummy plaquette and an edge that connects it to the boundary plaquette
-            plaq_id = plaq_ids.pop()
-            ppos = dual_graph[plaq_id].position
-            vpos1 = primal_graph[vid1].position
-            vpos2 = primal_graph[vid2].position
-            if ((ppos[1] < vpos1[1] and ppos[1] < vpos2[1])
-                    or (ppos[1] > vpos1[1] and ppos[1] > vpos2[1])):
-                # Dummy plaquette at top or bottom
-                position = (ppos[0], 2 * vpos1[1] - ppos[1])
-            elif ppos[0] > vpos1[0] or ppos[0] > vpos2[0]:
-                # Left
-                position = (min(vpos1[0], vpos2[0]), ppos[1])
-            else:
-                # Right
-                position = (max(vpos1[0], vpos2[0]), ppos[1])
-            dummy_id = dual_graph.add_node(
-                DummyPlaquette(position=position, vertices={vid1, vid2})
-            )
-            dual_graph.add_edge(plaq_id, dummy_id, link)
-
-    return dual_graph
