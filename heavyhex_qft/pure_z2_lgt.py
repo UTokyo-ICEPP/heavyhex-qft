@@ -392,21 +392,7 @@ class PureZ2LGT(ABC):
 
     def remove_vertex(self, vertex_id: int):
         for plaq_id in self.graph[vertex_id].plaquettes:
-            # Remove the plaquette from attrs
-            plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
-            # Replace it with a dummy in dual_graph
-            node = self.dual_graph.find_node_by_weight(plaquette)
-            for neighbor in self.dual_graph.neighbors(node):
-                if isinstance(self.dual_graph[neighbor], DummyPlaquette):
-                    self.dual_graph.remove_node(neighbor)
-            edge_index_map = self.dual_graph.incident_edge_index_map(node)
-            self.dual_graph.remove_node(node)
-            for _, target, link in edge_index_map.values():
-                if isinstance(self.dual_graph[target], Plaquette):
-                    dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
-                    node = self.dual_graph.add_node(dummy)
-                    self.dual_graph.add_edge(target, node, link)
-
+            self._pop_plaquette(plaq_id)
         # Remove the vertex from the primal graph
         self.graph.remove_node(vertex_id)
         # Validate the graph
@@ -414,9 +400,43 @@ class PureZ2LGT(ABC):
             if not self.link_plaquettes(lid):
                 raise ValueError(f'Link {lid} has been isolated by the removal of vertex'
                                  f' {vertex_id}. Isolated links do not participate in dynamics.')
-
         # Remake the qubit graph
         self._make_qubit_graph()
+
+    def remove_plaquette(self, plaq_id: int):
+        plaquette = self._pop_plaquette(plaq_id)
+        # Remove invalidated links
+        dual_graph_links = set(link.id for link in self.dual_graph.edges())
+        graph_links = set(self.graph.edge_indices())
+        for link_id in graph_links - dual_graph_links:
+            self.graph.remove_edge_from_index(link_id)
+        # Remove the reference to the plaquette from the vertices
+        for vertex_id in plaquette.vertices:
+            vertex = self.graph[vertex_id]
+            vertex.plaquettes.remove(plaquette.id)
+            if not vertex.plaquettes:
+                # This vertex becomes isolated
+                self.graph.remove_node(vertex_id)
+        # Remake the qubit graph
+        self._make_qubit_graph()
+
+    def _pop_plaquette(self, plaq_id: int):
+        # Remove the plaquette from attrs
+        plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
+        # Replace it with a dummy in dual_graph
+        node = self.dual_graph.find_node_by_weight(plaquette)
+        for neighbor in self.dual_graph.neighbors(node):
+            if isinstance(self.dual_graph[neighbor], DummyPlaquette):
+                self.dual_graph.remove_node(neighbor)
+        edge_index_map = self.dual_graph.incident_edge_index_map(node)
+        self.dual_graph.remove_node(node)
+        for _, target, link in edge_index_map.values():
+            if isinstance(self.dual_graph[target], Plaquette):
+                dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
+                node = self.dual_graph.add_node(dummy)
+                self.dual_graph.add_edge(target, node, link)
+
+        return plaquette
 
     def layout_heavy_hex(
         self,
