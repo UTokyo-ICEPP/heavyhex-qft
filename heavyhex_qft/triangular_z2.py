@@ -84,7 +84,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         for plaquette in self.graph.attrs['plaquettes'].values():
             node = self.dual_graph.find_node_by_weight(plaquette)
             links = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
-            if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.plaq_id)) is None:
+            if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.id)) is None:
                 # This plaquette has an associated qubit
                 target_qubit = self.qubit_graph.add_node(plaquette)
             else:
@@ -100,10 +100,10 @@ class TriangularZ2Lattice(PureZ2LGT):
     def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
         # Locate one plaquette qubit and compute the coordinate transformation between the dual
         # graph and the physical qubit graph
-        plaq_id = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
-        plaquette = self.qubit_graph[plaq_id]
+        logical_qubit = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
+        plaquette = self.qubit_graph[logical_qubit]
         ref_coord = np.array(plaquette.position)
-        offset = np.array(pos[layout[plaquette.logical_qubit]])
+        offset = np.array(pos[layout[logical_qubit]])
 
         for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
             x1, y1 = 2. * (np.array(self.graph[n1].position) - ref_coord) + offset
@@ -128,25 +128,28 @@ class TriangularZ2Lattice(PureZ2LGT):
         nump = self.num_plaquettes
         controls = np.full((nump, 3), -1, dtype=int)
         targets = np.empty(nump, dtype=int)
-        invalid_link_id = self.num_links
-        for plaq_id in self.dual_graph.filter_nodes(lambda node: isinstance(node, Plaquette)):
-            plaquette = self.dual_graph[plaq_id]
-            link_ids = self.plaquette_links(plaq_id)
-            if plaquette.direct_link is None:
+        invalid_qubit = self.qubit_graph.num_nodes()
+        links = {link_id: data[2] for link_id, data in self.graph.edge_index_map().items()}
+        logical_qubits = {qobj.label: lq for lq, qobj in enumerate(self.qubit_graph.nodes())}
+        for itarg, plaquette in enumerate(self.graph.attrs['plaquettes'].values()):
+            link_ids = self.plaquette_links(plaquette.id)
+            if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.id)) is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit
-                targets[plaq_id] = plaquette.logical_qubit
+                targets[itarg] = logical_qubits[plaquette.label]
+                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids]
             else:
-                dlink = self.dual_graph.get_edge_data_by_index(plaquette.direct_link)
-                targets[plaq_id] = dlink.logical_qubit
+                joint_link = links[joint_link_id]
+                targets[itarg] = logical_qubits[joint_link.label]
                 # Remove the direct link from the list of control qubits and add a dummy index
-                link_ids.remove(dlink.link_id)
-                link_ids.append(invalid_link_id)
-                invalid_link_id += 1
+                link_ids.remove(joint_link_id)
+                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids]
+                link_qubits.append(invalid_qubit)
+                invalid_qubit += 1
 
-            for perm in permutations(link_ids):
+            for perm in permutations(link_qubits):
                 # Find a permutation that does not clash with any of the existing control sequence
                 if np.all(np.array(perm)[None, :] != controls):
-                    controls[plaquette.plaq_id] = perm
+                    controls[itarg] = perm
                     break
             else:
                 raise RuntimeError('Failed to find a viable link ID permutation')
@@ -191,7 +194,6 @@ class TriangularZ2Lattice(PureZ2LGT):
             circuit.rz(angle, targets)
             for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
                 circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
-
         elif basis_2q == 'cz':
             circuit.h(targets)
             for control_qubits, mask in zip(controls.T, masks.T):
@@ -246,7 +248,7 @@ class TriangularZ2Lattice(PureZ2LGT):
 
     def magnetic_2q_gate_counts(
         self,
-        basis_2q: str = 'cx'
+        basis_2q: str = 'rzz/cz'
     ) -> dict[tuple[str, tuple[int, int]], int]:
         """Return a list of (gate name, qubits, counts)."""
         gate_counts = defaultdict(int)
@@ -257,8 +259,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             for control_qubits, mask in zip(controls.T, masks.T):
                 for qc, qt in zip(control_qubits[mask].tolist(), targets[mask].tolist()):
                     gate_counts[(basis_2q, (qc, qt))] += 2
-
-        elif basis_2q == 'rzz':
+        elif basis_2q[:3] == 'rzz':
             rzz_controls = np.empty_like(targets)
             for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
                 mask_rzz = np.all(controls[:, icol + 1:] == -1, axis=1)
@@ -331,6 +332,14 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     graph.add_nodes_from([Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())])
     graph.attrs['max_vertex_id'] = graph.num_nodes() - 1
 
+    def add_link(vertex, neighbor):
+        link_id = graph.add_edge(vertex.id, neighbor[0], None)
+        x, y = vertex.position
+        nx, ny = graph[neighbor[0]].position
+        position = ((x + nx) * 0.5, (y + ny) * 0.5)
+        graph.update_edge_by_index(link_id, Link(link_id, position))
+        return link_id
+
     # Connect the vertices. For plaquettes with no central qubit, save the id of the link that
     # connects the other two links of the plaquette.
     joint_links = []
@@ -341,20 +350,17 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
         icol = x
         # From left to right: Both vertices must be *
         if node_char == '*' and (neighbor := nodes.get((x + 2, y), (None, None)))[1] == '*':
-            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
-            graph.update_edge_by_index(link_id, Link(link_id))
+            link_id = add_link(vertex, neighbor)
             if config_rows[irow][icol + 1] == '-':
                 joint_links.append(link_id)
         # From top to bottom left
         if (neighbor := nodes.get((x - 1, y - 1))) is not None:
-            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
-            graph.update_edge_by_index(link_id, Link(link_id))
+            link_id = add_link(vertex, neighbor)
             if config_rows[irow + 1][icol] in '╵╎':
                 joint_links.append(link_id)
         # From top to bottom right
         if (neighbor := nodes.get((x + 1, y - 1))) is not None:
-            link_id = graph.add_edge(vertex.vertex_id, neighbor[0], None)
-            graph.update_edge_by_index(link_id, Link(link_id))
+            link_id = add_link(vertex, neighbor)
             if config_rows[irow][icol + 1] in '╷╎':
                 joint_links.append(link_id)
 
