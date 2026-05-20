@@ -78,21 +78,22 @@ class TriangularZ2Lattice(PureZ2LGT):
         super().__init__(graph)
 
     def _connect_qubit_graph(self):
+        links = self.graph.attrs['links']
         # Add plaquette qubits and connect the qubit nodes
         for plaquette in self.graph.attrs['plaquettes'].values():
-            node = self.dual_graph.find_node_by_weight(plaquette)
-            links = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
+            node = self.dual_graph.find_node_by_weight(plaquette.id)
+            link_ids = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
             if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.id)) is None:
                 # This plaquette has an associated qubit
                 target_qubit = self.qubit_graph.add_node(plaquette)
             else:
                 # This plaquette is implemented with link qubits only
-                joint_link = self.graph.get_edge_data_by_index(joint_link_id)
+                joint_link = links[joint_link_id]
                 target_qubit = self.qubit_graph.find_node_by_weight(joint_link)
-                links.remove(joint_link)
+                link_ids.remove(joint_link_id)
 
-            for link in links:
-                link_qubit = self.qubit_graph.find_node_by_weight(link)
+            for link_id in link_ids:
+                link_qubit = self.qubit_graph.find_node_by_weight(links[link_id])
                 self.qubit_graph.add_edge(link_qubit, target_qubit, None)
 
     # def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
@@ -112,11 +113,11 @@ class TriangularZ2Lattice(PureZ2LGT):
 
     def _twoq_gate_table(self) -> dict[int, tuple[int, int, int]]:
         """Return the parallel 2-qubit gate ordering."""
+        links = self.graph.attrs['links']
         nump = self.num_plaquettes
         controls = np.full((nump, 3), -1, dtype=int)
         targets = np.empty(nump, dtype=int)
         invalid_qubit = self.qubit_graph.num_nodes()
-        links = {link_id: data[2] for link_id, data in self.graph.edge_index_map().items()}
         logical_qubits = {qobj.label: lq for lq, qobj in enumerate(self.qubit_graph.nodes())}
         for itarg, plaquette in enumerate(self.graph.attrs['plaquettes'].values()):
             link_ids = self.plaquette_links(plaquette.id)
@@ -158,7 +159,7 @@ class TriangularZ2Lattice(PureZ2LGT):
             angle = (angle + np.pi) % (2. * np.pi) - np.pi
             abs_angle = abs(angle)
             sign_angle = np.sign(angle)
-            if basis_2q == 'rzz' and abs_angle > np.pi / 2.:
+            if basis_2q[3:] == 'rzz' and abs_angle > np.pi / 2.:
                 raise ValueError(
                     f'Rzz angle {angle} is too large for the Rzz gate; use basis_2q="cx" or "cz"'
                 )
@@ -341,21 +342,24 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
 
     # Initialize the graph with vertex nodes
     graph = rx.PyGraph(attrs={})
-    graph.add_nodes_from([Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())])
+    graph.attrs['vertices'] = {vid: Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())}
+    graph.add_nodes_from(graph.attrs['vertices'].keys())
     graph.attrs['max_vertex_id'] = graph.num_nodes() - 1
 
     def add_link(vertex, neighbor):
         link_id = graph.add_edge(vertex.id, neighbor[0], None)
+        graph.update_edge_by_index(link_id, link_id)
         x, y = vertex.position
-        nx, ny = graph[neighbor[0]].position
+        nx, ny = graph.attrs['vertices'][neighbor[0]].position
         position = ((x + nx) * 0.5, (y + ny) * 0.5)
-        graph.update_edge_by_index(link_id, Link(link_id, position))
+        graph.attrs['links'][link_id] = Link(link_id, position)
         return link_id
 
     # Connect the vertices. For plaquettes with no central qubit, save the id of the link that
     # connects the other two links of the plaquette.
+    graph.attrs['links'] = {}
     joint_links = []
-    for vertex in graph.nodes():
+    for vertex in graph.attrs['vertices'].values():
         node_char = nodes[vertex.position][1]
         x, y = vertex.position
         irow = nrows - 1 - y
@@ -389,7 +393,7 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     graph.attrs['max_plaq_id'] = len(plaq_vlists) - 1
 
     for plaq_id, plaq_vids in enumerate(sorted(plaq_vlists)):
-        vertices = [graph[vid] for vid in plaq_vids]
+        vertices = [graph.attrs['vertices'][vid] for vid in plaq_vids]
         # Position the plaquette node at the center of the rectangle that bounds the triangle
         pos_x = float(np.mean([vertex.position[0] for vertex in vertices]))
         pos_y = float(np.mean(np.unique([vertex.position[1] for vertex in vertices])))
@@ -402,9 +406,9 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
     graph.attrs['joint_link'] = {}
     index_map = graph.edge_index_map()
     for link_id in joint_links:
-        vid1, vid2 = index_map[link_id][:2]
+        v1, v2 = [graph.attrs['vertices'][vid] for vid in index_map[link_id][:2]]
         # There should be at most one plaq_id in the overlap. It's just easier to write as a loop
-        for plaq_id in graph[vid1].plaquettes & graph[vid2].plaquettes:
+        for plaq_id in v1.plaquettes & v2.plaquettes:
             graph.attrs['joint_link'][plaq_id] = link_id
 
     return graph
