@@ -282,10 +282,10 @@ class PureZ2LGT(ABC):
         qgraph.add_nodes_from(enumerate(self.qubit_graph.nodes()))
         qgraph.add_edges_from(self.qubit_graph.edge_index_map().values())
 
-        kwargs = {'font_size': 6, 'font_color': 'w',
-                  'pos': {lq: qobj.position
-                          for lq, qobj in enumerate(self.qubit_graph.nodes())},
-                  'node_shape': 's', 'node_color': '#034c3c', 'node_size': 440, 'style': ':'}
+        kwargs = {'font_size': 6, 'font_color': 'w', 'node_shape': 's', 'node_color': '#034c3c',
+                  'node_size': 440, 'width': 5., 'edge_color': 'r',
+                  'pos': {lq: qobj.position for lq, qobj in enumerate(self.qubit_graph.nodes())}}
+                  
         if layout:
             kwargs['labels'] = lambda p: f'{p[0]}\nq{layout[p[0]]}\n{p[1].label}'
         else:
@@ -396,12 +396,15 @@ class PureZ2LGT(ABC):
             plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
             # Replace it with a dummy in dual_graph
             node = self.dual_graph.find_node_by_weight(plaquette)
+            for neighbor in self.dual_graph.neighbors(node):
+                if isinstance(self.dual_graph[neighbor], DummyPlaquette):
+                    self.dual_graph.remove_node(neighbor)
             edge_index_map = self.dual_graph.incident_edge_index_map(node)
             self.dual_graph.remove_node(node)
-            dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
-            node = self.dual_graph.add_node(dummy)
             for _, target, link in edge_index_map.values():
                 if isinstance(self.dual_graph[target], Plaquette):
+                    dummy = DummyPlaquette(plaquette.position, vertices=plaquette.vertices)
+                    node = self.dual_graph.add_node(dummy)
                     self.dual_graph.add_edge(target, node, link)
 
         # Remove the vertex from the primal graph

@@ -89,7 +89,7 @@ class TriangularZ2Lattice(PureZ2LGT):
                 target_qubit = self.qubit_graph.add_node(plaquette)
             else:
                 # This plaquette is implemented with link qubits only
-                joint_link = self.graph.edge_index_map()[joint_link_id]
+                joint_link = self.graph.get_edge_data_by_index(joint_link_id)
                 target_qubit = self.qubit_graph.find_node_by_weight(joint_link)
                 links.remove(joint_link)
 
@@ -130,8 +130,8 @@ class TriangularZ2Lattice(PureZ2LGT):
                 joint_link = links[joint_link_id]
                 targets[itarg] = logical_qubits[joint_link.label]
                 # Remove the direct link from the list of control qubits and add a dummy index
-                link_ids.remove(joint_link_id)
-                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids]
+                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids
+                               if link_id != joint_link_id]
                 link_qubits.append(invalid_qubit)
                 invalid_qubit += 1
 
