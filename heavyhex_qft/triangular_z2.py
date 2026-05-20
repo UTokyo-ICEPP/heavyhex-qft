@@ -97,33 +97,22 @@ class TriangularZ2Lattice(PureZ2LGT):
                 link_qubit = self.qubit_graph.find_node_by_weight(link)
                 self.qubit_graph.add_edge(link_qubit, target_qubit, None)
 
-    def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
-        # Locate one plaquette qubit and compute the coordinate transformation between the dual
-        # graph and the physical qubit graph
-        logical_qubit = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
-        plaquette = self.qubit_graph[logical_qubit]
-        ref_coord = np.array(plaquette.position)
-        offset = np.array(pos[layout[logical_qubit]])
+    # def _draw_qubit_graph_links(self, layout, pos, selected_links, ax):
+    #     # Locate one plaquette qubit and compute the coordinate transformation between the dual
+    #     # graph and the physical qubit graph
+    #     logical_qubit = self.qubit_graph.filter_nodes(lambda qobj: isinstance(qobj, Plaquette))[0]
+    #     plaquette = self.qubit_graph[logical_qubit]
+    #     ref_coord = np.array(plaquette.position)
+    #     offset = np.array(pos[layout[logical_qubit]])
 
-        for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
-            x1, y1 = 2. * (np.array(self.graph[n1].position) - ref_coord) + offset
-            x2, y2 = 2. * (np.array(self.graph[n2].position) - ref_coord) + offset
-            color = '#ff11ff' if link_id in selected_links else '#881188'
-            ax.plot([x1, x2], [y1, y2],
-                    linewidth=1, linestyle='solid', marker='none', color=color)
+    #     for link_id, (n1, n2, _) in self.graph.edge_index_map().items():
+    #         x1, y1 = 2. * (np.array(self.graph[n1].position) - ref_coord) + offset
+    #         x2, y2 = 2. * (np.array(self.graph[n2].position) - ref_coord) + offset
+    #         color = '#ff11ff' if link_id in selected_links else '#881188'
+    #         ax.plot([x1, x2], [y1, y2],
+    #                 linewidth=1, linestyle='solid', marker='none', color=color)
 
-    def _layout_node_matcher(
-        self,
-        physical_qubit: int,
-        physical_neighbors: tuple[int, ...],
-        qobj: Link | Plaquette
-    ) -> bool:
-        """Node matcher function for qubit mapping."""
-        if isinstance(qobj, Plaquette):
-            return len(physical_neighbors) == 3
-        return len(physical_neighbors) in (1, 2)
-
-    def _twoq_gate_table(self) -> tuple[np.ndarray, np.ndarray]:
+    def _twoq_gate_table(self) -> dict[int, tuple[int, int, int]]:
         """Return the parallel 2-qubit gate ordering."""
         nump = self.num_plaquettes
         controls = np.full((nump, 3), -1, dtype=int)
@@ -156,17 +145,15 @@ class TriangularZ2Lattice(PureZ2LGT):
 
         # Set the invalid controls to -1
         controls[np.where(controls >= self.num_links)] = -1
-
-        return controls, targets
+        return {t: tuple(c) for t, c in zip(targets, controls)}
 
     def magnetic_evolution(
         self,
         plaquette_energy: float,
         time: float,
-        basis_2q: str = 'cx'
+        basis_2q: str = 'cz/rzz'
     ) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the magnetic term."""
-        circuit = QuantumCircuit(self.num_qubits)
         # Rzzz rotation angle
         angle = -2. * plaquette_energy * time
         if isinstance(angle, Number):
@@ -181,48 +168,66 @@ class TriangularZ2Lattice(PureZ2LGT):
             abs_angle = angle
             sign_angle = -1.
 
-        controls, targets = self._twoq_gate_table()
-        masks = controls >= 0
+        gate_table = self._twoq_gate_table()
         link_qubits = list(self.link_qubits().values())
 
+        circuit = QuantumCircuit(self.num_qubits)
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(link_qubits)
 
-        if basis_2q == 'cx':
-            for control_qubits, mask in zip(controls.T, masks.T):
-                circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
-            circuit.rz(angle, targets)
-            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
-                circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
-        elif basis_2q == 'cz':
-            circuit.h(targets)
-            for control_qubits, mask in zip(controls.T, masks.T):
-                circuit.cz(control_qubits[mask].tolist(), targets[mask].tolist())
-            circuit.rx(angle, targets)
-            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
-                circuit.cz(control_qubits[mask].tolist(), targets[mask].tolist())
-            circuit.h(targets)
-        elif basis_2q == 'rzz':
-            # The last positive control will be used for Rzz
-            rzz_controls = np.empty_like(targets)
-            for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
-                mask_rzz = np.all(controls[:, icol + 1:] == -1, axis=1)
-                mask_cx = mask & ~mask_rzz
-                if np.any(mask_cx):
-                    circuit.cx(control_qubits[mask_cx].tolist(), targets[mask_cx].tolist())
-                rzz_controls[mask & mask_rzz] = control_qubits[mask & mask_rzz]
-                masks[:, icol] = mask_cx
-            if sign_angle < 0.:
-                # Continuous Rzz accepts positive arguments only; sandwitch with Xs
-                circuit.x(targets)
-            circuit.rzz(abs_angle, rzz_controls, targets)
-            if sign_angle < 0.:
-                circuit.x(targets)
-            for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
-                if np.any(mask):
-                    circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+        if basis_2q[3:] == 'rzz':
+            # Last operation for each plaquette is rzz
+            last_controls = {t: next(i for i in reversed(range(3)) if cs[i] != -1)
+                             for t, cs in gate_table.items()}
         else:
-            raise ValueError(f'Invalid basis_2q: {basis_2q}')
+            last_controls = {t: -1 for t in gate_table}
+
+        if basis_2q[:2] == 'cz':
+            # Transform CZ to CX
+            circuit.h(gate_table.keys())
+                
+        for iop in range(3):
+            controls = [cs[iop] for t, cs in gate_table.items()
+                        if iop != last_controls[t] and cs[iop] != -1]
+            if controls:
+                targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
+                if basis_2q[:2] == 'cx':
+                    circuit.cx(controls, targets)
+                else:
+                    circuit.cz(controls, targets)
+            
+            controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
+            if controls:
+                targets = [t for t in gate_table if iop == last_controls[t]]
+                if basis_2q[:2] == 'cz':
+                    circuit.h(targets)
+                if sign_angle < 0.:
+                    # Continuous Rzz accepts positive arguments only; sandwitch with Xs
+                    circuit.x(targets)
+                circuit.rzz(abs_angle, controls, targets)
+                if sign_angle < 0.:
+                    circuit.x(targets)
+                if basis_2q[:2] == 'cz':
+                    circuit.h(targets)
+
+        if basis_2q == 'cx':
+            circuit.rz(angle, gate_table.keys())
+        elif basis_2q == 'cz':
+            circuit.rx(angle, gate_table.keys())
+
+        for iop in reversed(range(3)):
+            controls = [cs[iop] for t, cs in gate_table.items()
+                        if iop != last_controls[t] and cs[iop] != -1]
+            if controls:
+                targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
+                if basis_2q[:2] == 'cx':
+                    circuit.cx(controls, targets)
+                else:
+                    circuit.cz(controls, targets)
+
+        if basis_2q[:2] == 'cz':
+            # Transform CZ to CX
+            circuit.h(gate_table.keys())
 
         circuit.h(link_qubits)
 
@@ -230,48 +235,55 @@ class TriangularZ2Lattice(PureZ2LGT):
 
     def magnetic_clifford(self) -> QuantumCircuit:
         """Construct the magnetic term circuit at K*delta_t = pi/4."""
-        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
-        controls, targets = self._twoq_gate_table()
-        masks = controls >= 0
+        gate_table = self._twoq_gate_table()
         link_qubits = list(self.link_qubits().values())
 
+        circuit = QuantumCircuit(self.qubit_graph.num_nodes())
         # Rzzz(pi/2) circuit sandwitched by Hadamards on all links
         circuit.h(link_qubits)
-        for control_qubits, mask in zip(controls.T, masks.T):
-            circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
-        circuit.sdg(targets)
-        for control_qubits, mask in zip(controls.T[::-1], masks.T[::-1]):
-            circuit.cx(control_qubits[mask].tolist(), targets[mask].tolist())
+        for iop in range(3):
+            controls = [cs[iop] for cs in gate_table.values() if cs[iop] != -1]
+            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
+            circuit.cx(controls, targets)
+        circuit.sdg(gate_table.keys())
+        for iop in reversed(range(3)):
+            controls = [cs[iop] for cs in gate_table.values() if cs[iop] != -1]
+            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
+            circuit.cx(controls, targets)
         circuit.h(link_qubits)
 
         return circuit
 
     def magnetic_2q_gate_counts(
         self,
-        basis_2q: str = 'rzz/cz'
-    ) -> dict[tuple[str, tuple[int, int]], int]:
+        basis_2q: str = 'cz/rzz'
+    ) -> dict[str, dict[tuple[int, int], int]]:
         """Return a list of (gate name, qubits, counts)."""
-        gate_counts = defaultdict(int)
-        controls, targets = self._twoq_gate_table()
-        masks = controls >= 0
+        gate_counts = {basis_2q[:2]: defaultdict(int)}
+        if basis_2q[3:] == 'rzz':
+            gate_counts['rzz'] = defaultdict(int)
+        gate_table = self._twoq_gate_table()
 
-        if basis_2q in ['cx', 'cz']:
-            for control_qubits, mask in zip(controls.T, masks.T):
-                for qc, qt in zip(control_qubits[mask].tolist(), targets[mask].tolist()):
-                    gate_counts[(basis_2q, (qc, qt))] += 2
-        elif basis_2q[:3] == 'rzz':
-            rzz_controls = np.empty_like(targets)
-            for icol, (control_qubits, mask) in enumerate(zip(controls.T, masks.T)):
-                mask_rzz = np.all(controls[:, icol + 1:] == -1, axis=1)
-                mask_cx = mask & ~mask_rzz
-                for qc, qt in zip(control_qubits[mask_cx].tolist(), targets[mask_cx].tolist()):
-                    gate_counts[('cx', (qc, qt))] += 2
-                rzz_controls[mask & mask_rzz] = control_qubits[mask & mask_rzz]
+        if basis_2q[3:] == 'rzz':
+            # Last operation for each plaquette is rzz
+            last_controls = {t: next(i for i in reversed(range(3)) if cs[i] != -1)
+                             for t, cs in gate_table.items()}
+        else:
+            last_controls = {t: -1 for t in gate_table}
+                
+        for iop in range(3):
+            controls = [cs[iop] for t, cs in gate_table.items()
+                        if iop != last_controls[t] and cs[iop] != -1]
+            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
+            for c, t in zip(controls, targets):
+                gate_counts[basis_2q[:2]][(c, t)] += 2
+            
+            controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
+            targets = [t for t in gate_table if iop == last_controls[t]]
+            for c, t in zip(controls, targets):
+                gate_counts[basis_2q[3:]][(c, t)] += 1
 
-            for qc, qt in zip(rzz_controls.tolist(), targets.tolist()):
-                gate_counts[('rzz', (qc, qt))] += 1
-
-        return dict(gate_counts)
+        return gate_counts
 
 
 def make_primal_graph(configuration: str) -> tuple[rx.PyGraph, list[int]]:
