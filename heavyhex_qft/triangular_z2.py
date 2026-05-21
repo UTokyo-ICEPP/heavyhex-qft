@@ -6,6 +6,7 @@ import re
 from itertools import permutations
 from typing import Any
 import numpy as np
+from numpy.typing import NDArray
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
@@ -81,9 +82,7 @@ class TriangularZ2Lattice(PureZ2LGT):
     def _connect_qubit_graph(self):
         links = self.graph.attrs['links']
         # Add plaquette qubits and connect the qubit nodes
-        for plaquette in self.graph.attrs['plaquettes']:
-            if plaquette is None:
-                continue
+        for plaquette in filter(bool, self.graph.attrs['plaquettes']):
             node = self.dual_graph.find_node_by_weight(plaquette.id)
             link_ids = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
             if (joint_link_id := self.graph.attrs['joint_link'][plaquette.id]) is None:
@@ -114,31 +113,30 @@ class TriangularZ2Lattice(PureZ2LGT):
     #         ax.plot([x1, x2], [y1, y2],
     #                 linewidth=1, linestyle='solid', marker='none', color=color)
 
-    def _twoq_gate_table(self) -> dict[int, tuple[int, int, int]]:
-        """Return the parallel 2-qubit gate ordering."""
-        links = self.graph.attrs['links']
+    def _2q_gate_sequence(self) -> list[tuple[NDArray, NDArray, NDArray]]:
+        """Return a sequence of (controls, targets, is_last_for_target) for parallel 2q operations.
+        """
         nump = self.num_plaquettes
         controls = np.full((nump, 3), -1, dtype=int)
         targets = np.empty(nump, dtype=int)
-        invalid_qubit = self.qubit_graph.num_nodes()
-        logical_qubits = {qobj.label: lq for lq, qobj in enumerate(self.qubit_graph.nodes())}
-        plaquettes = filter(bool, self.graph.attrs['plaquettes'])
-        for itarg, plaquette in enumerate(plaquettes):
-            link_ids = self.plaquette_links(plaquette.id)
-            if (joint_link_id := self.graph.attrs['joint_link'][plaquette.id]) is None:
+        invalid_qubit = self.num_qubits
+        link_qubits = self.link_qubits()
+        plaquette_qubits = self.plaquette_qubits()
+        for itarg, plaq_id in enumerate(self.plaquette_ids):
+            link_ids = self.plaquette_links(plaq_id)
+            if (joint_link_id := self.graph.attrs['joint_link'][plaq_id]) is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit
-                targets[itarg] = logical_qubits[plaquette.label]
-                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids]
+                targets[itarg] = plaquette_qubits[plaq_id]
+                control_qubits = [link_qubits[link_id] for link_id in link_ids]
             else:
-                joint_link = links[joint_link_id]
-                targets[itarg] = logical_qubits[joint_link.label]
+                targets[itarg] = link_qubits[joint_link_id]
                 # Remove the direct link from the list of control qubits and add a dummy index
-                link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids
-                               if link_id != joint_link_id]
-                link_qubits.append(invalid_qubit)
+                control_qubits = [link_qubits[link_id] for link_id in link_ids
+                                  if link_id != joint_link_id]
+                control_qubits.append(invalid_qubit)
                 invalid_qubit += 1
 
-            for perm in permutations(link_qubits):
+            for perm in permutations(control_qubits):
                 # Find a permutation that does not clash with any of the existing control sequence
                 if np.all(np.array(perm)[None, :] != controls):
                     controls[itarg] = perm
@@ -146,9 +144,13 @@ class TriangularZ2Lattice(PureZ2LGT):
             else:
                 raise RuntimeError('Failed to find a viable link ID permutation')
 
-        # Set the invalid controls to -1
-        controls[np.where(controls >= self.num_links)] = -1
-        return {t: tuple(c) for t, c in zip(targets, controls)}
+        sequence = []
+        for iop in range(3):
+            is_valid = controls[:, iop] < self.num_qubits
+            is_last = np.all(controls[:, iop + 1:] >= self.num_qubits, axis=1)
+            sequence.append((controls[is_valid], targets[is_valid], is_last[is_valid]))
+
+        return sequence
 
     def magnetic_evolution(
         self,
@@ -171,66 +173,67 @@ class TriangularZ2Lattice(PureZ2LGT):
             abs_angle = angle
             sign_angle = -1.
 
-        gate_table = self._twoq_gate_table()
+        sequence = self._2q_gate_sequence()
+        target_qubits = set()
+        for _, targs, _ in sequence:
+            target_qubits |= set(targs.tolist())
+        target_qubits = list(target_qubits)
         link_qubits = list(self.link_qubits().values())
 
         circuit = QuantumCircuit(self.num_qubits)
         # Rzzz circuit sandwitched by Hadamards on all links
         circuit.h(link_qubits)
 
-        if basis_2q[3:] == 'rzz':
-            # Last operation for each plaquette is rzz
-            last_controls = {t: next(i for i in reversed(range(3)) if cs[i] != -1)
-                             for t, cs in gate_table.items()}
-        else:
-            last_controls = {t: -1 for t in gate_table}
-
         if basis_2q[:2] == 'cz':
             # Transform CZ to CX
-            circuit.h(gate_table.keys())
+            circuit.h(target_qubits)
 
-        for iop in range(3):
-            controls = [cs[iop] for t, cs in gate_table.items()
-                        if iop != last_controls[t] and cs[iop] != -1]
-            if controls:
-                targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
-                if basis_2q[:2] == 'cx':
-                    circuit.cx(controls, targets)
-                else:
-                    circuit.cz(controls, targets)
-
-            controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
-            if controls:
-                targets = [t for t in gate_table if iop == last_controls[t]]
+        for controls, targets, is_last in sequence:
+            if basis_2q[3:] == 'rzz' and np.any(is_last):
+                last_controls = controls[is_last].tolist()
+                last_targets = targets[is_last].tolist()
                 if basis_2q[:2] == 'cz':
-                    circuit.h(targets)
+                    circuit.h(last_targets)
                 if sign_angle < 0.:
                     # Continuous Rzz accepts positive arguments only; sandwitch with Xs
-                    circuit.x(targets)
-                circuit.rzz(abs_angle, controls, targets)
+                    circuit.x(last_targets)
+                circuit.rzz(abs_angle, last_controls, last_targets)
                 if sign_angle < 0.:
-                    circuit.x(targets)
+                    circuit.x(last_targets)
                 if basis_2q[:2] == 'cz':
-                    circuit.h(targets)
+                    circuit.h(last_targets)
+                
+                controls = controls[~is_last]
+                targets = targets[~is_last]
+
+            controls = controls.tolist()
+            targets = targets.tolist()
+            if controls:
+                if basis_2q[:2] == 'cx':
+                    circuit.cx(controls, targets)
+                else:
+                    circuit.cz(controls, targets)
 
         if basis_2q == 'cx':
-            circuit.rz(angle, gate_table.keys())
+            circuit.rz(angle, target_qubits)
         elif basis_2q == 'cz':
-            circuit.rx(angle, gate_table.keys())
+            circuit.rx(angle, target_qubits)
 
-        for iop in reversed(range(3)):
-            controls = [cs[iop] for t, cs in gate_table.items()
-                        if iop != last_controls[t] and cs[iop] != -1]
+        for controls, targets, is_last in reversed(sequence):
+            if basis_2q[3:] == 'rzz' and np.any(is_last):
+                controls = controls[~is_last]
+                targets = targets[~is_last]
+
+            controls = controls.tolist()
+            targets = targets.tolist()
             if controls:
-                targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
                 if basis_2q[:2] == 'cx':
                     circuit.cx(controls, targets)
                 else:
                     circuit.cz(controls, targets)
 
         if basis_2q[:2] == 'cz':
-            # Transform CZ to CX
-            circuit.h(gate_table.keys())
+            circuit.h(target_qubits)
 
         circuit.h(link_qubits)
 
@@ -238,21 +241,21 @@ class TriangularZ2Lattice(PureZ2LGT):
 
     def magnetic_clifford(self) -> QuantumCircuit:
         """Construct the magnetic term circuit at K*delta_t = pi/4."""
-        gate_table = self._twoq_gate_table()
+        sequence = self._2q_gate_sequence()
+        target_qubits = set()
+        for _, targs, _ in sequence:
+            target_qubits |= set(targs.tolist())
+        target_qubits = list(target_qubits)
         link_qubits = list(self.link_qubits().values())
 
         circuit = QuantumCircuit(self.qubit_graph.num_nodes())
         # Rzzz(pi/2) circuit sandwitched by Hadamards on all links
         circuit.h(link_qubits)
-        for iop in range(3):
-            controls = [cs[iop] for cs in gate_table.values() if cs[iop] != -1]
-            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
-            circuit.cx(controls, targets)
-        circuit.sdg(gate_table.keys())
-        for iop in reversed(range(3)):
-            controls = [cs[iop] for cs in gate_table.values() if cs[iop] != -1]
-            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
-            circuit.cx(controls, targets)
+        for controls, targets, _ in sequence:
+            circuit.cx(controls.tolist(), targets.tolist())
+        circuit.sdg(target_qubits)
+        for controls, targets, _ in reversed(sequence):
+            circuit.cx(controls.tolist(), targets.tolist())
         circuit.h(link_qubits)
 
         return circuit
@@ -265,26 +268,20 @@ class TriangularZ2Lattice(PureZ2LGT):
         gate_counts = {basis_2q[:2]: defaultdict(int)}
         if basis_2q[3:] == 'rzz':
             gate_counts['rzz'] = defaultdict(int)
-        gate_table = self._twoq_gate_table()
+        sequence = self._2q_gate_sequence()
 
-        if basis_2q[3:] == 'rzz':
-            # Last operation for each plaquette is rzz
-            last_controls = {t: next(i for i in reversed(range(3)) if cs[i] != -1)
-                             for t, cs in gate_table.items()}
-        else:
-            last_controls = {t: -1 for t in gate_table}
+        for controls, targets, is_last in sequence:
+            if basis_2q[3:] == 'rzz':
+                last_controls = controls[is_last].tolist()
+                last_targets = targets[is_last].tolist()
+                for c, t in zip(last_controls, last_targets):
+                    gate_counts['rzz'][(c, t)] += 1
+                
+                controls = controls[~is_last]
+                targets = targets[~is_last]
 
-        for iop in range(3):
-            controls = [cs[iop] for t, cs in gate_table.items()
-                        if iop != last_controls[t] and cs[iop] != -1]
-            targets = [t for t, cs in gate_table.items() if cs[iop] != -1]
-            for c, t in zip(controls, targets):
+            for c, t in zip(controls.tolist(), targets.tolist()):
                 gate_counts[basis_2q[:2]][(c, t)] += 2
-
-            controls = [cs[iop] for t, cs in gate_table.items() if iop == last_controls[t]]
-            targets = [t for t in gate_table if iop == last_controls[t]]
-            for c, t in zip(controls, targets):
-                gate_counts[basis_2q[3:]][(c, t)] += 1
 
         return gate_counts
 
