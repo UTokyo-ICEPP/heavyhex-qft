@@ -148,7 +148,7 @@ class TriangularZ2Lattice(PureZ2LGT):
         for iop in range(3):
             is_valid = controls[:, iop] < self.num_qubits
             is_last = np.all(controls[:, iop + 1:] >= self.num_qubits, axis=1)
-            sequence.append((controls[is_valid], targets[is_valid], is_last[is_valid]))
+            sequence.append((controls[is_valid, iop], targets[is_valid], is_last[is_valid]))
 
         return sequence
 
