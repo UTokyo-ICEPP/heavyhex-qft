@@ -4,11 +4,11 @@ from collections import defaultdict
 from numbers import Number
 import re
 from itertools import permutations
-from typing import Optional
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from heavyhex_qft.pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPlaquette
+from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
+from heavyhex_qft.pure_z2_lgt import PureZ2LGT
 
 
 class TriangularZ2Lattice(PureZ2LGT):

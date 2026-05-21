@@ -5,7 +5,8 @@ from itertools import count
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from heavyhex_qft.pure_z2_lgt import PureZ2LGT, Vertex, Link, Plaquette, DummyPlaquette, Ancilla
+from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette, Ancilla
+from heavyhex_qft.pure_z2_lgt import PureZ2LGT
 
 
 class RectangularZ2Lattice(PureZ2LGT):
