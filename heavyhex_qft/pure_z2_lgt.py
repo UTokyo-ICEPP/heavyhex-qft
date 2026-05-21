@@ -94,6 +94,15 @@ class PureZ2LGT(ABC):
     def vertices_capacity(self) -> int:
         return len(self.graph.attrs['vertices'])
 
+    def plaquette_id_to_idx(self, plaq_id: int | list[int]) -> int | list[int]:
+        return self._pid_to_idx[plaq_id]
+    
+    def link_id_to_idx(self, link_id: int | list[int]) -> int | list[int]:
+        return self._lid_to_idx[link_id]
+
+    def vertex_id_to_idx(self, vertex_id: int | list[int]) -> int | list[int]:
+        return self._vid_to_idx[vertex_id]
+
     @property
     def matching_matrix(self) -> csc_matrix:
         return csc_matrix(self._matching_matrix)
@@ -544,13 +553,11 @@ class PureZ2LGT(ABC):
         of qubits.
         """
         nq = self.num_links
-        iqs = np.full(self.links_capacity, -1)  # map link id to qubit index
-        iqs[self.link_ids] = np.arange(self.num_links)
         link_terms = [to_pauli_string({iq: 'Z'}, nq) for iq in range(nq)]
         plaquette_terms = []
         for plaq_id in self.plaquette_ids:
             lids = self.plaquette_links(plaq_id)
-            plaquette_terms.append(to_pauli_string({iq: 'X' for iq in iqs[lids]}, nq))
+            plaquette_terms.append(to_pauli_string({iq: 'X' for iq in self._lid_to_bit[lids]}, nq))
 
         hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
         hamiltonian += SparsePauliOp(plaquette_terms, [-plaquette_energy] * len(plaquette_terms))
@@ -703,13 +710,27 @@ class PureZ2LGT(ABC):
         """Add plaquette qubits and define the qubit connections."""
 
     def _set_caches(self):
+        # Mappings between element ids to array indices (right to left)
+        self._lid_to_idx = np.full(self.links_capacity, -1)
+        self._lid_to_idx[self.link_ids] = np.arange(self.num_links)[::-1]
+        self._pid_to_idx = np.full(self.plaquettes_capacity, -1)
+        self._pid_to_idx[self.plaquette_ids] = np.arange(self.num_plaquettes)[::-1]
+        self._vid_to_idx = np.full(self.vertices_capacity, -1)
+        self._vid_to_idx[self.vertex_ids] = np.arange(self.num_vertices)[::-1]
+
+        # Mappings between element ids to clbits
+        self._lid_to_bit = np.full(self.links_capacity, -1)
+        self._lid_to_bit[self.link_ids] = np.arange(self.num_links)
+        # pid_to_bit is used in the dual lattice Hamiltonian construction
+        self._pid_to_bit = np.full(self.plaquettes_capacity, -1)
+        self._pid_to_bit[self.plaquette_ids] = np.arange(self.num_plaquettes)
+
         # Matching matrix for syndrome calculation
-        icols = np.full(self.links_capacity, -1)  # map link id to column index
-        icols[self.link_ids] = np.arange(self.num_links)[::-1]
         self._matching_matrix = np.zeros((self.num_vertices, self.num_links), dtype=int)
         for irow, vertex_id in enumerate(self.vertex_ids[::-1]):
             vertex_lids = self.vertex_links(vertex_id)
-            self._matching_matrix[irow, icols[vertex_lids]] = 1
+            self._matching_matrix[irow, self._lid_to_idx[vertex_lids]] = 1
+
 
     def _graph_attr_to_json(self, key: str, value: Any) -> str:
         return json.dumps(value)

@@ -126,13 +126,10 @@ class PlaquetteDual:
             raise RuntimeError('No boundary patch found')
 
         # Finally compose the plaquette state
-        pid_to_idx = np.full(self.primal.plaquettes_capacity, -1)
-        pid_to_idx[self.plaquette_ids] = np.arange(self.num_plaquettes)[::-1]
-
         state = np.zeros(self.num_plaquettes, dtype=np.uint8)
         for pid, color in coloring.items():
             if color == excited_color:
-                state[pid_to_idx[patch_graph[pid][0]]] = 1
+                state[self.primal._pid_to_idx[patch_graph[pid][0]]] = 1
 
         return state
 
@@ -143,10 +140,7 @@ class PlaquetteDual:
         in the coefficients of the ZZ terms.
         """
         num_p = self.num_plaquettes
-        iqs = np.full(self.primal.plaquettes_capacity, -1)
-        iqs[self.plaquette_ids] = np.arange(num_p)
-        lid_to_idx = np.full(self.primal.links_capacity, -1)
-        lid_to_idx[self.link_ids] = np.arange(self.num_links)[::-1]
+        iqs = self.primal._pid_to_bit
 
         paulis = []
         coeffs = []
@@ -159,7 +153,7 @@ class PlaquetteDual:
             else:
                 paulis.append(to_pauli_string({iqs[p1]: 'Z', iqs[p2]: 'Z'}, num_p))
             # Coeff is -1 / +1 if base link state is 0 / 1
-            coeffs.append(-1. + 2. * self.base_link_state[lid_to_idx[link_id]])
+            coeffs.append(-1. + 2. * self.base_link_state[self.primal._lid_to_idx[link_id]])
         paulis += [to_pauli_string({p: 'X'}, num_p) for p in range(num_p)]
         coeffs += [-plaquette_energy] * num_p
 
@@ -167,16 +161,11 @@ class PlaquetteDual:
 
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
-        iqs = np.full(self.primal.plaquettes_capacity, -1)
-        iqs[self.plaquette_ids] = np.arange(self.num_plaquettes)
-        iqs = iqs.tolist()
-        lid_to_idx = np.full(self.primal.links_capacity, -1)
-        lid_to_idx[self.link_ids] = np.arange(self.num_links)[::-1]
-        lid_to_idx = lid_to_idx.tolist()
-
+        iqs = self.primal._pid_to_bit.tolist()
+        
         circuit = QuantumCircuit(self.num_plaquettes)
         for node1, node2, link_id in self.graph.edge_index_map().values():
-            angle = (-1. + 2. * self.base_link_state[lid_to_idx[link_id]]) * 2. * time
+            angle = (-1. + 2. * self.base_link_state[self.primal._lid_to_idx[link_id]]) * 2. * time
             p1, p2 = self.graph[node1], self.graph[node2]
             if isinstance(p1, DummyPlaquette):
                 circuit.rz(angle, iqs[p2])
