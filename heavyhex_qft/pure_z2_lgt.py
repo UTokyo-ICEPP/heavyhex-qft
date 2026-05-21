@@ -540,7 +540,7 @@ class PureZ2LGT(ABC):
         """
         nq = self.num_links
         iqs = np.full(self.links_capacity, -1)  # map link id to qubit index
-        iqs[self.link_ids] = np.arange(self.num_links)[::-1]
+        iqs[self.link_ids] = np.arange(self.num_links)
         link_terms = [to_pauli_string({iq: 'Z'}, nq) for iq in range(nq)]
         plaquette_terms = []
         for plaq_id in self.plaquette_ids:
