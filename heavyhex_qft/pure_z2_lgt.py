@@ -52,6 +52,7 @@ class PureZ2LGT(ABC):
         self.graph = graph
         self._make_dual_graph()
         self._make_qubit_graph()
+        self.layout = None
         self._set_caches()
 
     @property
@@ -89,14 +90,14 @@ class PureZ2LGT(ABC):
     @property
     def links_capacity(self) -> int:
         return len(self.graph.attrs['links'])
-    
+
     @property
     def vertices_capacity(self) -> int:
         return len(self.graph.attrs['vertices'])
 
     def plaquette_id_to_idx(self, plaq_id: int | list[int]) -> int | list[int]:
         return self._pid_to_idx[plaq_id]
-    
+
     def link_id_to_idx(self, link_id: int | list[int]) -> int | list[int]:
         return self._lid_to_idx[link_id]
 
@@ -129,7 +130,8 @@ class PureZ2LGT(ABC):
             return {'id': json.dumps(payload)}
 
         data = {'graph': rx.node_link_json(self.graph, graph_attrs=graph_attrs,
-                                           node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs)}
+                                           node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs),
+                'layout': self.layout}
         data |= self._args_json_data()
         return json.dumps(data)
 
@@ -149,12 +151,14 @@ class PureZ2LGT(ABC):
 
         def node_edge_attrs(json_data):
             return json.loads(json_data['id'])
-        
+
         data = json.loads(data)
         graph = rx.parse_node_link_json(data.pop('graph'), graph_attrs=graph_attrs,
                                         node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs)
-        return cls(graph, **data)
-        # return graph
+        layout = data.pop('layout')
+        obj = cls(graph, **data)
+        obj.layout = layout
+        return obj
 
     def draw_graph(
         self,
@@ -253,6 +257,7 @@ class PureZ2LGT(ABC):
                   'node_size': 440, 'width': 5., 'edge_color': 'r',
                   'pos': {lq: qobj.position for lq, qobj in enumerate(self.qubit_graph.nodes())}}
 
+        layout = layout or self.layout
         if layout:
             kwargs['labels'] = lambda p: f'{p[0]}\nq{layout[p[0]]}\n{p[1].label}'
         else:
@@ -268,14 +273,18 @@ class PureZ2LGT(ABC):
 
     def draw_physical_qubits(
         self,
-        layout: list[int],
         coupling_map: CouplingMap,
+        layout: Optional[list[int]] = None,
         ax: Optional[Axes] = None,
         links: Optional[Sequence[int]] = None,
         plaquettes: Optional[Sequence[int]] = None,
         physical_qubits: Optional[Sequence[int]] = None,
         **kwargs
     ) -> Figure:
+        layout = layout or self.layout
+        if not layout:
+            raise ValueError('layout required when default is not set')
+
         cgraph = rx.PyGraph(multigraph=False)
         cgraph.add_nodes_from(coupling_map.graph.node_indices())
         cgraph.add_edges_from(coupling_map.graph.weighted_edge_list())
@@ -382,7 +391,7 @@ class PureZ2LGT(ABC):
             if not self.link_plaquettes(link_id):
                 raise ValueError(f'Link {link_id} has been isolated by the removal of vertex'
                                  f' {vertex_id}. Isolated links do not participate in dynamics.')
-            
+
         self._set_caches()
 
     def remove_plaquette(self, plaq_id: int):
@@ -413,7 +422,7 @@ class PureZ2LGT(ABC):
     def layout_heavy_hex(
         self,
         coupling_map: Optional[CouplingMap] = None,
-        qubit_assignment: Optional[int | dict[tuple[str, int], int]] = None,
+        qubit_assignment: Optional[int | dict[str, int]] = None,
         backend_properties: Optional[BackendProperties] = None,
         target: Optional[Target] = None,
         basis_2q: str = 'cz/rzz'
@@ -512,7 +521,7 @@ class PureZ2LGT(ABC):
                 layout[lq] = pq
 
             if not gate_errors:
-                best_layout = layout.tolist()
+                best_layout = layout
                 LOG.info('[layout_heavy_hex] Using the first layout found since no error'
                          ' information is available')
                 break
@@ -534,7 +543,8 @@ class PureZ2LGT(ABC):
         if best_layout is None:
             raise ValueError('I do not think this would ever happen')
 
-        return best_layout.tolist()
+        self.layout = best_layout.tolist()
+        return list(self.layout)
 
     def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
@@ -734,7 +744,7 @@ class PureZ2LGT(ABC):
 
     def _graph_attr_to_json(self, key: str, value: Any) -> str:
         return json.dumps(value)
-    
+
     @classmethod
     def _json_to_graph_attr(cls, key: str, value: str) -> Any:
         return json.loads(value)
