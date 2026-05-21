@@ -1,9 +1,18 @@
-import json
 from dataclasses import dataclass, field
+from typing import Any
+import json
 
 
 @dataclass
-class Vertex:
+class BaseElement:
+    """Base class for lattice elements."""
+    @classmethod
+    def from_json(cls, data: str) -> Any:
+        return cls.from_dict({key: json.loads(value) for key, value in json.loads(data).items()})
+
+
+@dataclass
+class Vertex(BaseElement):
     """Vertex data."""
     id: int
     position: tuple[float, float]
@@ -13,24 +22,24 @@ class Vertex:
     def label(self) -> str:
         return f'V:{self.id}'
 
-    def to_json_data(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'id': json.dumps(self.id),
-            'position': json.dumps(list(self.position)),
-            'plaquettes': json.dumps(list(self.plaquettes))
+            'id': self.id,
+            'position': list(self.position),
+            'plaquettes': list(self.plaquettes)
         }
 
     @classmethod
-    def from_json_data(cls, data):
-        return Vertex(
-            id=json.loads(data['id']),
-            position=tuple(json.loads(data['position'])),
-            plaquettes=set(json.loads(data['plaquettes']))
+    def from_dict(cls, data: dict[str, Any]) -> 'Vertex':
+        return cls(
+            id=data['id'],
+            position=tuple(data['position']),
+            plaquettes=set(data['plaquettes'])
         )
 
 
 @dataclass
-class Link:
+class Link(BaseElement):
     """Link data."""
     id: int
     position: tuple[float, float]
@@ -39,22 +48,22 @@ class Link:
     def label(self) -> str:
         return f'L:{self.id}'
 
-    def to_json_data(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'id': json.dumps(self.id),
-            'position': json.dumps(list(self.position))
+            'id': self.id,
+            'position': list(self.position)
         }
 
     @classmethod
-    def from_json_data(cls, data):
-        return Link(
-            id=json.loads(data['id']),
-            position=tuple(json.loads(data['position']))
+    def from_dict(cls, data: dict[str, Any]) -> 'Link':
+        return cls(
+            id=data['id'],
+            position=tuple(data['position'])
         )
 
 
 @dataclass
-class Plaquette:
+class Plaquette(BaseElement):
     """Plaquette data."""
     id: int
     position: tuple[float, float]
@@ -64,24 +73,24 @@ class Plaquette:
     def label(self) -> str:
         return f'P:{self.id}'
 
-    def to_json_data(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'id': json.dumps(self.id),
-            'position': json.dumps(list(self.position)),
-            'vertices': json.dumps(list(self.vertices))
+            'id': self.id,
+            'position': list(self.position),
+            'vertices': list(self.vertices)
         }
 
     @classmethod
-    def from_json_data(cls, data):
-        return Plaquette(
-            id=json.loads(data['id']),
-            position=tuple(json.loads(data['position'])),
-            vertices=set(json.loads(data['vertices']))
+    def from_dict(cls, data: dict[str, Any]) -> 'Plaquette':
+        return cls(
+            id=data['id'],
+            position=tuple(data['position']),
+            vertices=set(data['vertices'])
         )
 
 
 @dataclass
-class DummyPlaquette:
+class DummyPlaquette(BaseElement):
     """Dummy plaquette for dual graph."""
     position: tuple[float, float]
     vertices: set[int] = field(default_factory=set)
@@ -90,27 +99,27 @@ class DummyPlaquette:
     def label(self) -> str:
         return f''
 
-    def to_json_data(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
-            'position': json.dumps(list(self.position)),
-            'vertices': json.dumps(list(self.vertices))
+            'position': list(self.position),
+            'vertices': list(self.vertices)
         }
 
     @classmethod
-    def from_json_data(cls, data):
-        return DummyPlaquette(
-            position=tuple(json.loads(data['position'])),
-            vertices=set(json.loads(data['vertices']))
+    def from_dict(cls, data: dict[str, Any]) -> 'DummyPlaquette':
+        return cls(
+            position=tuple(data['position']),
+            vertices=set(data['vertices'])
         )
 
 
 @dataclass
-class Ancilla:
+class Ancilla(BaseElement):
     """Ancilla qubit."""
 
-    def to_json_data(self):
+    def to_dict(self) -> dict[str, Any]:
         return {}
 
     @classmethod
-    def from_json_data(cls, data):
-        return Ancilla()
+    def from_dict(cls, data: dict[str, Any]) -> 'Ancilla':
+        return cls()

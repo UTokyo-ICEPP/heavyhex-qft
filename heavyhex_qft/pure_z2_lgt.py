@@ -3,8 +3,9 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from itertools import combinations, count
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 import logging
+import json
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
@@ -14,7 +15,7 @@ from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap, Target
 from qiskit.quantum_info import SparsePauliOp
 from qiskit_ibm_runtime.models import BackendProperties
-from heavyhex_qft.elements import Link, Plaquette, DummyPlaquette
+from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
 from heavyhex_qft.utils import as_bitarray, to_pauli_string, qubit_coordinates
 if TYPE_CHECKING:
     from heavyhex_qft.plaquette_dual import PlaquetteDual
@@ -53,7 +54,7 @@ class PureZ2LGT(ABC):
 
     @property
     def num_plaquettes(self) -> int:
-        return len(self.graph.attrs['plaquettes'])
+        return sum(1 for p in self.graph.attrs['plaquettes'] if p is not None)
 
     @property
     def num_links(self) -> int:
@@ -71,8 +72,50 @@ class PureZ2LGT(ABC):
         # pylint: disable-next=import-outside-toplevel
         from heavyhex_qft.plaquette_dual import PlaquetteDual
         return PlaquetteDual(self, base_link_state=base_link_state)
-    
-    
+
+    def to_json(self) -> str:
+        """Return a JSON serialization of the primal graph."""
+        def graph_attrs(attrs):
+            json_data = {}
+            for key, value in attrs.items():
+                if key in ('vertices', 'links', 'plaquettes'):
+                    value = json.dumps([None if e is None else e.to_dict() for e in value])
+                else:
+                    value = self._graph_attr_to_json(key, value)
+                json_data[key] = value
+
+            return json_data
+
+        def node_edge_attrs(payload):
+            return {'id': json.dumps(payload)}
+
+        data = {'graph': rx.node_link_json(self.graph, graph_attrs=graph_attrs,
+                                           node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs)}
+        data |= self._args_json_data()
+        return json.dumps(data)
+
+    @classmethod
+    def from_json(cls, data: str) -> Any:
+        def graph_attrs(json_data):
+            constructors = {'vertices': Vertex, 'links': Link, 'plaquettes': Plaquette}
+            attrs = {}
+            for key, value in json_data.items():
+                if (ctor := constructors.get(key)):
+                    value = [None if e is None else ctor.from_dict(e) for e in json.loads(value)]
+                else:
+                    value = cls._json_to_graph_attr(key, value)
+                attrs[key] = value
+
+            return attrs
+
+        def node_edge_attrs(json_data):
+            return json.loads(json_data['id'])
+        
+        data = json.loads(data)
+        graph = rx.parse_node_link_json(data.pop('graph'), graph_attrs=graph_attrs,
+                                        node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs)
+        return cls(graph, **data)
+        # return graph
 
     def draw_graph(
         self,
@@ -117,7 +160,7 @@ class PureZ2LGT(ABC):
 
         if plaquette_labels:
             # Draw the plaquette ids
-            for plaquette in self.graph.attrs['plaquettes'].values():
+            for plaquette in filter(bool, self.graph.attrs['plaquettes']):
                 x, y = plaquette.position
                 fig.axes[0].text(x, y, f'{plaquette.id}', ha='center', va='center')
 
@@ -151,7 +194,7 @@ class PureZ2LGT(ABC):
 
         if vertex_labels:
             # Draw the vertex ids
-            for vertex in self.graph.attrs['vertices'].values():
+            for vertex in filter(bool, self.graph.attrs['vertices']):
                 x, y = vertex.position
                 fig.axes[0].text(x, y, f'{vertex.id}', ha='center', va='center')
 
@@ -282,24 +325,28 @@ class PureZ2LGT(ABC):
     def remove_vertex(self, vertex_id: int):
         vertices = self.graph.attrs['vertices']
         node = self.graph.find_node_by_weight(vertex_id)
-        vertex = vertices.pop(vertex_id)
+        vertex = vertices[vertex_id]
+        vertices[vertex_id] = None
         for plaq_id in vertex.plaquettes:
-            self.graph.attrs['plaquettes'].pop(plaq_id)
+            self.graph.attrs['plaquettes'][plaq_id] = None
         for neighbor in self.graph.neighbors(node):
             vertices[self.graph[neighbor]].plaquettes -= vertex.plaquettes
+        for val in self.graph.in_edges(node):
+            self.graph.attrs['links'][val[2]] = None
         # Remove the vertex from the primal graph
         self.graph.remove_node(node)
+        # Remake the dual and qubit graphs
+        self._make_dual_graph()
+        self._make_qubit_graph()
         # Validate the graph
         for link_id in self.graph.edges():
             if not self.link_plaquettes(link_id):
                 raise ValueError(f'Link {link_id} has been isolated by the removal of vertex'
                                  f' {vertex_id}. Isolated links do not participate in dynamics.')
-        # Remake the dual and qubit graphs
-        self._make_dual_graph()
-        self._make_qubit_graph()
 
     def remove_plaquette(self, plaq_id: int):
-        plaquette = self.graph.attrs['plaquettes'].pop(plaq_id)
+        plaquette = self.graph.attrs['plaquettes'][plaq_id]
+        self.graph.attrs['plaquettes'][plaq_id] = None
         # Remove plaquette references from bounding vertices
         for vertex_id in plaquette.vertices:
             self.graph.attrs['vertices'][vertex_id].plaquettes.remove(plaq_id)
@@ -311,6 +358,7 @@ class PureZ2LGT(ABC):
                 n1, n2 = next(val[:2] for val in self.graph.weighted_edge_list()
                               if val[2] == link_id)
                 self.graph.remove_edge(n1, n2)
+                self.graph.attrs['links'][link_id] = None
         # Remove isolated vertices
         for vertex_id in plaquette.vertices:
             node = self.graph.find_node_by_weight(vertex_id)
@@ -450,7 +498,7 @@ class PureZ2LGT(ABC):
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
         measurement result.
         """
-        rev_link_state = np.zeros(self.graph.attrs['max_link_id'] + 1, dtype=np.uint8)
+        rev_link_state = np.zeros(len(self.graph.attrs['links']), dtype=np.uint8)
         rev_link_state[self.graph.edges()] = as_bitarray(link_state)[::-1]
         # Return in reverse order (vertex 0 at last bit)
         return np.array([np.sum(rev_link_state[self.vertex_links(vid)]) % 2
@@ -466,8 +514,8 @@ class PureZ2LGT(ABC):
         link_id_to_iq = {link_id: iq for iq, link_id in enumerate(self.graph.edges())}
         link_terms = [to_pauli_string({iq: 'Z'}, nq) for iq in link_id_to_iq.values()]
         plaquette_terms = []
-        for plaq_id in self.graph.attrs['plaquettes']:
-            iqs = [link_id_to_iq[lid] for lid in self.plaquette_links(plaq_id)]
+        for plaquette in filter(bool, self.graph.attrs['plaquettes']):
+            iqs = [link_id_to_iq[lid] for lid in self.plaquette_links(plaquette.id)]
             plaquette_terms.append(to_pauli_string({iq: 'X' for iq in iqs}, nq))
 
         hamiltonian = SparsePauliOp(link_terms, [-1.] * len(link_terms))
@@ -575,7 +623,7 @@ class PureZ2LGT(ABC):
         plaquettes = self.graph.attrs['plaquettes']
         # Initialze the dual graph with plaquette nodes.
         self.dual_graph = rx.PyGraph()
-        self.dual_graph.add_nodes_from(plaquettes.keys())
+        self.dual_graph.add_nodes_from([p.id for p in filter(bool, plaquettes)])
 
         for node1, node2, link_id in self.graph.weighted_edge_list():
             vid1 = self.graph[node1]
@@ -611,3 +659,13 @@ class PureZ2LGT(ABC):
     @abstractmethod
     def _connect_qubit_graph(self):
         """Add plaquette qubits and define the qubit connections."""
+
+    def _graph_attr_to_json(self, key: str, value: Any) -> str:
+        return json.dumps(value)
+    
+    @classmethod
+    def _json_to_graph_attr(cls, key: str, value: str) -> Any:
+        return json.loads(value)
+
+    def _args_json_data(self) -> dict[str, Any]:
+        return {}

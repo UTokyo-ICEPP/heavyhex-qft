@@ -4,6 +4,7 @@ from collections import defaultdict
 from numbers import Number
 import re
 from itertools import permutations
+from typing import Any
 import numpy as np
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
@@ -80,10 +81,12 @@ class TriangularZ2Lattice(PureZ2LGT):
     def _connect_qubit_graph(self):
         links = self.graph.attrs['links']
         # Add plaquette qubits and connect the qubit nodes
-        for plaquette in self.graph.attrs['plaquettes'].values():
+        for plaquette in self.graph.attrs['plaquettes']:
+            if plaquette is None:
+                continue
             node = self.dual_graph.find_node_by_weight(plaquette.id)
             link_ids = [val[2] for val in self.dual_graph.incident_edge_index_map(node).values()]
-            if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.id)) is None:
+            if (joint_link_id := self.graph.attrs['joint_link'][plaquette.id]) is None:
                 # This plaquette has an associated qubit
                 target_qubit = self.qubit_graph.add_node(plaquette)
             else:
@@ -119,9 +122,10 @@ class TriangularZ2Lattice(PureZ2LGT):
         targets = np.empty(nump, dtype=int)
         invalid_qubit = self.qubit_graph.num_nodes()
         logical_qubits = {qobj.label: lq for lq, qobj in enumerate(self.qubit_graph.nodes())}
-        for itarg, plaquette in enumerate(self.graph.attrs['plaquettes'].values()):
+        plaquettes = filter(bool, self.graph.attrs['plaquettes'])
+        for itarg, plaquette in enumerate(plaquettes):
             link_ids = self.plaquette_links(plaquette.id)
-            if (joint_link_id := self.graph.attrs['joint_link'].get(plaquette.id)) is None:
+            if (joint_link_id := self.graph.attrs['joint_link'][plaquette.id]) is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit
                 targets[itarg] = logical_qubits[plaquette.label]
                 link_qubits = [logical_qubits[links[link_id].label] for link_id in link_ids]
@@ -342,9 +346,10 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
 
     # Initialize the graph with vertex nodes
     graph = rx.PyGraph(attrs={})
-    graph.attrs['vertices'] = {vid: Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())}
-    graph.add_nodes_from(graph.attrs['vertices'].keys())
-    graph.attrs['max_vertex_id'] = graph.num_nodes() - 1
+    graph.attrs['vertices'] = [Vertex(vid, coord) for vid, coord in enumerate(nodes.keys())]
+    graph.attrs['links'] = []
+    graph.attrs['plaquettes'] = []
+    graph.add_nodes_from(range(len(graph.attrs['vertices'])))
 
     def add_link(vertex, neighbor):
         link_id = graph.add_edge(vertex.id, neighbor[0], None)
@@ -352,14 +357,13 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
         x, y = vertex.position
         nx, ny = graph.attrs['vertices'][neighbor[0]].position
         position = ((x + nx) * 0.5, (y + ny) * 0.5)
-        graph.attrs['links'][link_id] = Link(link_id, position)
+        graph.attrs['links'].append(Link(link_id, position))
         return link_id
 
     # Connect the vertices. For plaquettes with no central qubit, save the id of the link that
     # connects the other two links of the plaquette.
-    graph.attrs['links'] = {}
     joint_links = []
-    for vertex in graph.attrs['vertices'].values():
+    for vertex in graph.attrs['vertices']:
         node_char = nodes[vertex.position][1]
         x, y = vertex.position
         irow = nrows - 1 - y
@@ -380,8 +384,6 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
             if config_rows[irow][icol + 1] in '╷╎':
                 joint_links.append(link_id)
 
-    graph.attrs['max_link_id'] = graph.num_edges() - 1
-
     # Find the plaquettes through graph cycles of length 4
     plaq_vlists = set()
     for node in graph.node_indices():
@@ -389,21 +391,18 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
             if len(cycle) == 4:
                 plaq_vlists.add(tuple(sorted(cycle[:3])))
 
-    graph.attrs['plaquettes'] = {}
-    graph.attrs['max_plaq_id'] = len(plaq_vlists) - 1
-
     for plaq_id, plaq_vids in enumerate(sorted(plaq_vlists)):
         vertices = [graph.attrs['vertices'][vid] for vid in plaq_vids]
         # Position the plaquette node at the center of the rectangle that bounds the triangle
         pos_x = float(np.mean([vertex.position[0] for vertex in vertices]))
         pos_y = float(np.mean(np.unique([vertex.position[1] for vertex in vertices])))
         plaquette = Plaquette(plaq_id, (pos_x, pos_y), set(plaq_vids))
-        graph.attrs['plaquettes'][plaq_id] = plaquette
+        graph.attrs['plaquettes'].append(plaquette)
         for vertex in vertices:
             vertex.plaquettes.add(plaq_id)
 
     # Add qubit connectivity information
-    graph.attrs['joint_link'] = {}
+    graph.attrs['joint_link'] = [None] * len(graph.attrs['plaquettes'])
     index_map = graph.edge_index_map()
     for link_id in joint_links:
         v1, v2 = [graph.attrs['vertices'][vid] for vid in index_map[link_id][:2]]
