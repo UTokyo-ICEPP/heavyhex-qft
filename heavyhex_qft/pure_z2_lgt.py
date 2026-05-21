@@ -7,6 +7,7 @@ from typing import Any, Optional, TYPE_CHECKING
 import logging
 import json
 import numpy as np
+from scipy.sparse import csc_matrix
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
@@ -92,6 +93,10 @@ class PureZ2LGT(ABC):
     @property
     def vertices_capacity(self) -> int:
         return len(self.graph.attrs['vertices'])
+
+    @property
+    def matching_matrix(self) -> csc_matrix:
+        return csc_matrix(self._matching_matrix)
 
     def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None) -> "PlaquetteDual":
         # pylint: disable-next=import-outside-toplevel
