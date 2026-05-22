@@ -173,7 +173,8 @@ class PureZ2LGT(ABC):
         selected_links = set(links or [])
 
         vertices = self.graph.attrs['vertices']
-        kwargs = {'pos': {vid: vertices[vid].position for vid in self.graph.nodes()}}
+        kwargs = {'pos': {node: vertices[self.graph[node]].position
+                          for node in self.graph.node_indices()}}
         if vertex_labels:
             kwargs['labels'] = str
         if link_labels:
