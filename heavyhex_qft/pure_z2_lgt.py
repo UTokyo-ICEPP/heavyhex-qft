@@ -184,16 +184,19 @@ class PureZ2LGT(ABC):
             if len(selected_vertices) == self.num_vertices:
                 # selected_vertices is a binary filter
                 selected_vertices = np.nonzero(selected_vertices)[0]
-            for iv in selected_vertices:
-                kwargs['node_color'][iv] = '#b41f1f'
+            for vid in selected_vertices:
+                node = self.graph.find_node_by_weight(vid)
+                kwargs['node_color'][node] = '#b41f1f'
 
         if selected_links:
             kwargs['edge_color'] = ['k'] * self.num_links
             if len(selected_links) == self.num_links:
                 # selected_links is a binary filter
                 selected_links = np.nonzero(selected_links)[0]
-            for il in selected_links:
-                kwargs['edge_color'][il] = 'r'
+            lid_edge_map = {val[2]: edge for edge, val in self.graph.edge_index_map().items()}
+            for lid in selected_links:
+                edge = lid_edge_map[lid]
+                kwargs['edge_color'][edge] = 'r'
 
         fig = rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
