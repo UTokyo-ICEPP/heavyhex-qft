@@ -427,7 +427,7 @@ class PureZ2LGT(ABC):
         self,
         coupling_map: Optional[CouplingMap] = None,
         qubit_assignment: Optional[int | dict[str, int]] = None,
-        backend_properties: Optional[BackendProperties] = None,
+        backend_properties: Optional['BackendProperties'] = None,
         target: Optional[Target] = None,
         basis_2q: str = 'cz/rzz'
     ) -> list[int]:
