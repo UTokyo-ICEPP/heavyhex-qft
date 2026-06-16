@@ -15,10 +15,10 @@ import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
 from qiskit.transpiler import CouplingMap, Target
 from qiskit.quantum_info import SparsePauliOp
-from qiskit_ibm_runtime.models import BackendProperties
 from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
 from heavyhex_qft.utils import as_bitarray, to_pauli_string, qubit_coordinates
 if TYPE_CHECKING:
+    from qiskit_ibm_runtime.models import BackendProperties
     from heavyhex_qft.plaquette_dual import PlaquetteDual
 
 LOG = logging.getLogger(__name__)

@@ -4,12 +4,11 @@ from collections import defaultdict
 from numbers import Number
 import re
 from itertools import permutations
-from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 import rustworkx as rx
 from qiskit.circuit import QuantumCircuit
-from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
+from heavyhex_qft.elements import Vertex, Link, Plaquette
 from heavyhex_qft.pure_z2_lgt import PureZ2LGT
 
 
