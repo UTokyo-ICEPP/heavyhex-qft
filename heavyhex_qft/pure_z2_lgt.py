@@ -547,7 +547,7 @@ class PureZ2LGT(ABC):
         self._layout = best_layout.tolist()
         return self.layout
 
-    def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
+    def get_charge_config(self, link_state: np.ndarray | str) -> np.ndarray:
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
         measurement result.
 
@@ -555,7 +555,7 @@ class PureZ2LGT(ABC):
         link, where the link order is given by self.link_ids. In the returned bit string, `j`th bit
         from the left corresponds to `nv - j - 1`th vertex (in self.vertex_ids order).
         """
-        return np.sum(as_bitarray(link_state) * self._vl_matrix, axis=1) & 1
+        return (self._vl_matrix @ as_bitarray(link_state)) & 1
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Return the Z2 LGT Hamiltonian expressed as a SparsePauliOp.
