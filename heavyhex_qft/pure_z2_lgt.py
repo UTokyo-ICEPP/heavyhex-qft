@@ -96,17 +96,23 @@ class PureZ2LGT(ABC):
         return len(self.graph.attrs['vertices'])
 
     def plaquette_id_to_idx(self, plaq_id: int | list[int]) -> int | list[int]:
-        return self._pid_to_idx[plaq_id]
+        if (idx := self._pid_to_idx[plaq_id]) == -1:
+            raise KeyError(f'Plaquette id {plaq_id}')
+        return idx
 
     def link_id_to_idx(self, link_id: int | list[int]) -> int | list[int]:
-        return self._lid_to_idx[link_id]
+        if (idx := self._lid_to_idx[link_id]) == -1:
+            raise KeyError(f'Link id {link_id}')
+        return idx
 
     def vertex_id_to_idx(self, vertex_id: int | list[int]) -> int | list[int]:
-        return self._vid_to_idx[vertex_id]
+        if (idx := self._vid_to_idx[vertex_id]) == -1:
+            raise KeyError(f'Vertex id {vertex_id}')
+        return idx
 
     @property
     def matching_matrix(self) -> csc_matrix:
-        return csc_matrix(self._matching_matrix)
+        return csc_matrix(self._vl_matrix)
 
     def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None) -> "PlaquetteDual":
         # pylint: disable-next=import-outside-toplevel
@@ -342,27 +348,23 @@ class PureZ2LGT(ABC):
 
     def plaquette_links(self, plaq_id: int) -> list[int]:
         """Return the list of ids of the links surrounding the plaquette."""
-        node = self.dual_graph.find_node_by_weight(plaq_id)
-        return [val[2] for val in self.dual_graph.in_edges(node)]
+        mask = self._pl_matrix[self.plaquette_id_to_idx(plaq_id)].astype(bool)[::-1]
+        return np.array(self.link_ids)[mask].tolist()
 
     def link_plaquettes(self, link_id: int) -> list[int]:
         """Return the list (size 1 or 2) of ids of the plaquettes that have the link as an edge."""
-        nodes = next(val[:2] for val in self.dual_graph.weighted_edge_list() if val[2] == link_id)
-        plaq_ids = []
-        for node in nodes:
-            if isinstance((pid := self.dual_graph[node]), int):
-                plaq_ids.append(pid)
-        return plaq_ids
+        mask = self._pl_matrix[:, self.link_id_to_idx(link_id)].astype(bool)[::-1]
+        return np.array(self.plaquette_ids)[mask].tolist()
 
     def vertex_links(self, vertex_id: int) -> list[int]:
         """Return the list of ids of the links incident on the vertex."""
-        node = self.graph.find_node_by_weight(vertex_id)
-        return [val[2] for val in self.graph.in_edges(node)]
+        mask = self._vl_matrix[self.vertex_id_to_idx(vertex_id)].astype(bool)[::-1]
+        return np.array(self.link_ids)[mask].tolist()
 
     def link_vertices(self, link_id: int) -> tuple[int, int]:
         """Return the ids of the pair of vertices that the link connects."""
-        nodes = next(val[:2] for val in self.graph.weighted_edge_list() if val[2] == link_id)
-        return [self.graph[node] for node in nodes]
+        mask = self._vl_matrix[:, self.link_id_to_idx(link_id)].astype(bool)[::-1]
+        return np.array(self.vertex_ids)[mask].tolist()
 
     def link_qubits(self) -> dict[int, int]:
         """Return ids of logical qubits corresponding to links."""
@@ -418,6 +420,7 @@ class PureZ2LGT(ABC):
             node = self.graph.find_node_by_weight(vertex_id)
             if len(self.graph.neighbors(node)) == 0:
                 self.graph.remove_node(node)
+                self.graph.attrs['vertices'][vertex_id] = None
         # Remake the dual and qubit graphs
         self._make_dual_graph()
         self._make_qubit_graph()
@@ -558,7 +561,7 @@ class PureZ2LGT(ABC):
         link, where the link order is given by self.link_ids. In the returned bit string, `j`th bit
         from the left corresponds to `nv - j - 1`th vertex (in self.vertex_ids order).
         """
-        return np.sum(as_bitarray(link_state) * self._matching_matrix, axis=1) & 1
+        return np.sum(as_bitarray(link_state) * self._vl_matrix, axis=1) & 1
 
     def make_hamiltonian(self, plaquette_energy: float) -> SparsePauliOp:
         """Return the Z2 LGT Hamiltonian expressed as a SparsePauliOp.
@@ -739,12 +742,19 @@ class PureZ2LGT(ABC):
         self._pid_to_bit = np.full(self.plaquettes_capacity, -1)
         self._pid_to_bit[self.plaquette_ids] = np.arange(self.num_plaquettes)
 
-        # Matching matrix for syndrome calculation
-        self._matching_matrix = np.zeros((self.num_vertices, self.num_links), dtype=int)
+        # (vertex, link) matrix
+        self._vl_matrix = np.zeros((self.num_vertices, self.num_links), dtype=np.uint8)
         for irow, vertex_id in enumerate(self.vertex_ids[::-1]):
-            vertex_lids = self.vertex_links(vertex_id)
-            self._matching_matrix[irow, self._lid_to_idx[vertex_lids]] = 1
+            node = self.graph.find_node_by_weight(vertex_id)
+            lids = [val[2] for val in self.graph.in_edges(node)]
+            self._vl_matrix[irow, self._lid_to_idx[lids]] = 1
 
+        # (plaq, link) matrix
+        self._pl_matrix = np.zeros((self.num_plaquettes, self.num_links), dtype=np.uint8)
+        for irow, plaq_id in enumerate(self.plaquette_ids[::-1]):
+            node = self.dual_graph.find_node_by_weight(plaq_id)
+            lids = [val[2] for val in self.dual_graph.in_edges(node)]
+            self._pl_matrix[irow, self._lid_to_idx[lids]] = 1
 
     def _graph_attr_to_json(self, key: str, value: Any) -> str:
         return json.dumps(value)
