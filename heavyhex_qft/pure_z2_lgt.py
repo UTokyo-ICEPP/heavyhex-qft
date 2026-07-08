@@ -7,7 +7,6 @@ from typing import Any, Optional, TYPE_CHECKING
 import logging
 import json
 import numpy as np
-from scipy.sparse import csc_matrix
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
@@ -50,10 +49,7 @@ class PureZ2LGT(ABC):
     """
     def __init__(self, graph: rx.PyGraph):
         self.graph = graph
-        self._make_dual_graph()
-        self._make_qubit_graph()
-        self.layout = None
-        self._set_caches()
+        self._reset()
 
     @property
     def num_plaquettes(self) -> int:
@@ -95,6 +91,10 @@ class PureZ2LGT(ABC):
     def vertices_capacity(self) -> int:
         return len(self.graph.attrs['vertices'])
 
+    @property
+    def layout(self) -> list[int]:
+        return list(self._layout)
+
     def plaquette_id_to_idx(self, plaq_id: int | list[int]) -> int | list[int]:
         if (idx := self._pid_to_idx[plaq_id]) == -1:
             raise KeyError(f'Plaquette id {plaq_id}')
@@ -111,8 +111,12 @@ class PureZ2LGT(ABC):
         return idx
 
     @property
-    def matching_matrix(self) -> csc_matrix:
-        return csc_matrix(self._vl_matrix)
+    def vl_matrix(self) -> np.ndarray:
+        return self._vl_matrix
+
+    @property
+    def pl_matrix(self) -> np.ndarray:
+        return self._pl_matrix
 
     def plaquette_dual(self, base_link_state: Optional[np.ndarray] = None) -> "PlaquetteDual":
         # pylint: disable-next=import-outside-toplevel
@@ -137,7 +141,7 @@ class PureZ2LGT(ABC):
 
         data = {'graph': rx.node_link_json(self.graph, graph_attrs=graph_attrs,
                                            node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs),
-                'layout': self.layout}
+                'layout': self._layout}
         data |= self._args_json_data()
         return json.dumps(data)
 
@@ -267,7 +271,7 @@ class PureZ2LGT(ABC):
                   'node_size': 440, 'width': 5., 'edge_color': 'r',
                   'pos': {lq: qobj.position for lq, qobj in enumerate(self.qubit_graph.nodes())}}
 
-        layout = layout or self.layout
+        layout = layout or self._layout
         if layout:
             kwargs['labels'] = lambda p: f'{p[0]}\nq{layout[p[0]]}\n{p[1].label}'
         else:
@@ -291,7 +295,7 @@ class PureZ2LGT(ABC):
         physical_qubits: Optional[Sequence[int]] = None,
         **kwargs
     ) -> Figure:
-        layout = layout or self.layout
+        layout = layout or self._layout
         if not layout:
             raise ValueError('layout required when default is not set')
 
@@ -377,31 +381,21 @@ class PureZ2LGT(ABC):
                 if isinstance(payload, Plaquette)}
 
     def remove_vertex(self, vertex_id: int):
-        vertices = self.graph.attrs['vertices']
-        node = self.graph.find_node_by_weight(vertex_id)
-        vertex = vertices[vertex_id]
-        vertices[vertex_id] = None
-        for plaq_id in vertex.plaquettes:
-            self.graph.attrs['plaquettes'][plaq_id] = None
-        for neighbor in self.graph.neighbors(node):
-            vertices[self.graph[neighbor]].plaquettes -= vertex.plaquettes
-        for val in self.graph.in_edges(node):
-            self.graph.attrs['links'][val[2]] = None
-        # Remove the vertex from the primal graph
-        self.graph.remove_node(node)
-        # Remake the dual and qubit graphs
-        self._make_dual_graph()
-        self._make_qubit_graph()
-        # Validate the graph
-        for link_id in self.graph.edges():
-            if not self.link_plaquettes(link_id):
-                raise ValueError(f'Link {link_id} has been isolated by the removal of vertex'
-                                 f' {vertex_id}. Isolated links do not participate in dynamics.')
+        vertex = self.graph.attrs['vertices'][vertex_id]
+        if vertex is None:
+            raise ValueError(f'Vertex {vertex_id} is already removed')
+        # Implement as a sequential removal of touching plaquettes to avoid creating isolated
+        # links and link chains
+        for plaq_id in list(vertex.plaquettes):
+            self._remove_plaquette(plaq_id)
+            # _remove_plaquette makes a reference to the dual lattice
+            self._make_dual_graph()
+        self._reset()
 
-        self._set_caches()
-
-    def remove_plaquette(self, plaq_id: int):
+    def _remove_plaquette(self, plaq_id: int):
         plaquette = self.graph.attrs['plaquettes'][plaq_id]
+        if plaquette is None:
+            raise ValueError(f'Plaquette {plaq_id} is already removed')
         self.graph.attrs['plaquettes'][plaq_id] = None
         # Remove plaquette references from bounding vertices
         for vertex_id in plaquette.vertices:
@@ -421,10 +415,10 @@ class PureZ2LGT(ABC):
             if len(self.graph.neighbors(node)) == 0:
                 self.graph.remove_node(node)
                 self.graph.attrs['vertices'][vertex_id] = None
-        # Remake the dual and qubit graphs
-        self._make_dual_graph()
-        self._make_qubit_graph()
-        self._set_caches()
+
+    def remove_plaquette(self, plaq_id: int):
+        self._remove_plaquette(plaq_id)
+        self._reset()
 
     def layout_heavy_hex(
         self,
@@ -550,8 +544,8 @@ class PureZ2LGT(ABC):
         if best_layout is None:
             raise ValueError('I do not think this would ever happen')
 
-        self.layout = best_layout.tolist()
-        return list(self.layout)
+        self._layout = best_layout.tolist()
+        return self.layout
 
     def get_syndrome(self, link_state: np.ndarray | str) -> np.ndarray:
         """Compute the bit-flip syndrome (parity of sum of link 0/1s at each vertex) from a link
@@ -755,6 +749,12 @@ class PureZ2LGT(ABC):
             node = self.dual_graph.find_node_by_weight(plaq_id)
             lids = [val[2] for val in self.dual_graph.in_edges(node)]
             self._pl_matrix[irow, self._lid_to_idx[lids]] = 1
+
+    def _reset(self):
+        self._make_dual_graph()
+        self._make_qubit_graph()
+        self._set_caches()
+        self._layout = None
 
     def _graph_attr_to_json(self, key: str, value: Any) -> str:
         return json.dumps(value)
