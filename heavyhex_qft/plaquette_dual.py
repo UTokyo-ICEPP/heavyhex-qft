@@ -18,7 +18,47 @@ class PlaquetteDual:
         else:
             assert len(base_link_state) == primal.num_links
             self.base_link_state = np.array(base_link_state, dtype=np.uint8)
-        self._base_syndrome = primal.get_syndrome(self.base_link_state)
+
+        # Compute the row and column operations to transform the pl matrix to the standard form
+        nrow = self.num_plaquettes
+        ncol = self.num_links
+        # Tracer matrix
+        # - Top left block is the pl matrix to be transformed
+        # - Top right block is the unitary representing the row operations
+        # - Bottom left row traces the column permutations
+        tracer = np.ones((nrow + 1, ncol + nrow), dtype=np.uint8)
+        tracer[:nrow, :ncol] = self.primal.pl_matrix
+        tracer[nrow, :ncol] = np.arange(ncol)
+        tracer[:nrow, ncol:] = np.eye(nrow, dtype=np.uint8)
+
+        for irow in range(nrow):
+            one_hot = np.zeros(nrow, dtype=np.uint8)
+            one_hot[irow] = 1
+            # Search for a one-hot column with 1 at irow
+            matches = np.argwhere(np.all(tracer[:nrow, :ncol] == one_hot[:, None], axis=0))
+            if matches.shape[0] != 0:
+                if (match := matches[0, 0]) != irow:
+                    # col swap
+                    tracer[:, [irow, match]] = tracer[:, [match, irow]]
+                continue
+
+            # Search for a row with 1 in column irow
+            matches = np.argwhere(tracer[irow:nrow, irow] == 1)
+            if matches.shape[0] != 0:
+                if (match := matches[0, 0] + irow) != irow:
+                    # row swap
+                    tracer[[irow, match]] = tracer[[match, irow]]
+            else:
+                # Bring the column with 1 in row irow to column irow
+                next_col = np.argwhere(tracer[irow, :ncol] == 1)[0, 0]
+                tracer[:, [irow, next_col]] = tracer[:, [next_col, irow]]
+
+            # Eliminate 1s everywhere except the current row
+            mask = (tracer[:nrow, irow] == 1) & ~one_hot.astype(bool)
+            tracer[:nrow][mask] ^= tracer[irow]
+
+        self._decode_row_ops = np.array(tracer[:nrow, ncol:])
+        self._decode_col_perms = np.array(tracer[nrow, :ncol])
 
     @property
     def graph(self) -> rx.PyGraph:
@@ -27,22 +67,27 @@ class PlaquetteDual:
     @property
     def num_plaquettes(self) -> int:
         return self.primal.num_plaquettes
-    
+
     @property
     def num_links(self) -> int:
         return self.primal.num_links
-    
+
     @property
     def plaquette_ids(self) -> list[int]:
         return self.primal.plaquette_ids
-    
+
     @property
     def link_ids(self) -> list[int]:
         return self.primal.link_ids
 
-    @property
-    def base_syndrome(self) -> np.ndarray:
-        return self._base_syndrome
+    def encode_plaq_to_link(self, plaq_state: np.ndarray | str) -> np.ndarray:
+        plaq_state = as_bitarray(plaq_state)
+        return (plaq_state @ self.primal.pl_matrix + self.base_link_state) & 1
+
+    def decode_link_to_plaq(self, link_state: np.ndarray | str) -> np.ndarray:
+        link_state = as_bitarray(link_state)
+        return ((link_state ^ self.base_link_state)[self._decode_col_perms][:self.num_plaquettes]
+                @ self._decode_row_ops) & 1
 
     def map_link_state(self, link_state: np.ndarray | str) -> np.ndarray:
         """Interpret a link state as plaquette excitations with respect to the base link state.
@@ -110,7 +155,7 @@ class PlaquetteDual:
                 label = excited
             else:
                 label = bulk
-            
+
             patch_graph.contract_nodes(nids, (plaq_ids, label))
 
         # Apply a two-coloring and determine which of 0 or 1 corresponds to excitation
@@ -162,7 +207,7 @@ class PlaquetteDual:
     def electric_evolution(self, time: float) -> QuantumCircuit:
         """Construct the Trotter evolution circuit of the electric term."""
         iqs = self.primal._pid_to_bit.tolist()
-        
+
         circuit = QuantumCircuit(self.num_plaquettes)
         for node1, node2, link_id in self.graph.edge_index_map().values():
             angle = (-1. + 2. * self.base_link_state[self.primal._lid_to_idx[link_id]]) * 2. * time
