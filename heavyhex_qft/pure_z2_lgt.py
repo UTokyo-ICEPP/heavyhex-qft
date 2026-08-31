@@ -17,9 +17,11 @@ from qiskit.quantum_info import SparsePauliOp
 from heavyhex_qft.elements import Vertex, Link, Plaquette, DummyPlaquette
 from heavyhex_qft.utils import as_bitarray, to_pauli_string, qubit_coordinates
 if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
     from qiskit_ibm_runtime.models import BackendProperties
     from heavyhex_qft.plaquette_dual import PlaquetteDual
 
+type Color = str | float | tuple[float, ...] | tuple[str, float] | ArrayLike
 LOG = logging.getLogger(__name__)
 
 
@@ -95,17 +97,17 @@ class PureZ2LGT(ABC):
     def layout(self) -> list[int]:
         return list(self._layout)
 
-    def plaquette_id_to_idx(self, plaq_id: int | list[int]) -> int | list[int]:
+    def plaquette_id_to_idx(self, plaq_id: int) -> int:
         if (idx := self._pid_to_idx[plaq_id]) == -1:
             raise KeyError(f'Plaquette id {plaq_id}')
         return idx
 
-    def link_id_to_idx(self, link_id: int | list[int]) -> int | list[int]:
+    def link_id_to_idx(self, link_id: int) -> int:
         if (idx := self._lid_to_idx[link_id]) == -1:
             raise KeyError(f'Link id {link_id}')
         return idx
 
-    def vertex_id_to_idx(self, vertex_id: int | list[int]) -> int | list[int]:
+    def vertex_id_to_idx(self, vertex_id: int) -> int:
         if (idx := self._vid_to_idx[vertex_id]) == -1:
             raise KeyError(f'Vertex id {vertex_id}')
         return idx
@@ -177,6 +179,8 @@ class PureZ2LGT(ABC):
         vertex_labels: bool = True,
         link_labels: bool = True,
         plaquette_labels: bool = True,
+        vertex_color: Optional[Color] = None,
+        link_color: Optional[Color] = None,
         ax: Optional[Axes] = None
     ) -> Figure | None:
         selected_vertices = set(vertices or [])
@@ -189,9 +193,14 @@ class PureZ2LGT(ABC):
             kwargs['labels'] = str
         if link_labels:
             kwargs['edge_labels'] = str
+        if vertex_color is not None:
+            kwargs['node_color'] = vertex_color
+        if link_color is not None:
+            kwargs['edge_color'] = link_color
 
         if selected_vertices:
-            kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
+            if not isinstance(kwargs.get('node_color'), (Sequence, np.ndarray)):
+                kwargs['node_color'] = ['#1f78b4'] * self.num_vertices
             if len(selected_vertices) == self.num_vertices:
                 # selected_vertices is a binary filter
                 selected_vertices = np.nonzero(selected_vertices)[0]
@@ -200,14 +209,17 @@ class PureZ2LGT(ABC):
                 kwargs['node_color'][node] = '#b41f1f'
 
         if selected_links:
-            kwargs['edge_color'] = ['k'] * self.num_links
+            if not isinstance(kwargs.get('edge_color'), (Sequence, np.ndarray)):
+                kwargs['edge_color'] = ['k'] * self.num_links
             if len(selected_links) == self.num_links:
                 # selected_links is a binary filter
                 selected_links = np.nonzero(selected_links)[0]
-            lid_edge_map = {val[2]: edge for edge, val in self.graph.edge_index_map().items()}
+            lid_edge_idx_map = {val[2]: edge for edge, val in self.graph.edge_index_map().items()}
+            edge_indices = self.graph.edge_indices()
             for lid in selected_links:
-                edge = lid_edge_map[lid]
-                kwargs['edge_color'][edge] = 'r'
+                edge_idx = lid_edge_idx_map[lid]
+                ilink = next(i for i, idx in enumerate(edge_indices) if idx == edge_idx)
+                kwargs['edge_color'][ilink] = 'r'
 
         fig = rx.visualization.mpl_draw(self.graph, ax=ax, with_labels=True, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
@@ -229,6 +241,8 @@ class PureZ2LGT(ABC):
         vertex_labels: bool = True,
         link_labels: bool = True,
         plaquette_labels: bool = True,
+        link_color: Optional[Color] = None,
+        plaquette_color: Optional[Color] = None,
         ax: Optional[Axes] = None
     ) -> Figure | None:
         pos = {}
@@ -242,6 +256,10 @@ class PureZ2LGT(ABC):
             kwargs['labels'] = lambda pid: str(pid) if isinstance(pid, int) else ''
         if link_labels:
             kwargs['edge_labels'] = str
+        if link_color is not None:
+            kwargs['edge_color'] = link_color
+        if plaquette_color is not None:
+            kwargs['node_color'] = plaquette_color
 
         fig = rx.visualization.mpl_draw(self.dual_graph, ax=ax, with_labels=True, **kwargs)
         # There is a bug in mpl_draw - fig should be non-None if ax is, but variable ax is
