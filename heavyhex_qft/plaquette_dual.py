@@ -10,7 +10,120 @@ from heavyhex_qft.utils import as_bitarray, to_pauli_string
 
 
 class PlaquetteDual:
-    """Dual lattice of 2d Z2 LGT."""
+    r"""Dual lattice of 2d Z2 LGT.
+    
+    =========================
+    "Encoding" and "decoding"
+    =========================
+
+    Plaquette dual of a Z2 LGT is closely related to classical error correction code. Specifically,
+    we can regard the link configurations as code words that encode the messages represented by
+    plaquette configurations. The "PL" matrix G
+
+    .. math::
+
+        G_{pl} = \begin{cases}
+            1 \quad \text{if}\; l \in \partial p \\
+            0 \quad \text{otherwise}
+        \end{cases}
+
+    is the generator of the code:
+
+    .. math::
+
+        x = y G + b
+
+    where :math:`x` and :math:`y` are the link and plaquette configurations, and :math:`b` is the
+    base link state.
+
+    To decode a link configuration :math:`x` that belongs to the same charge sector as :math:`b`,
+    we multiplly :math:`x + b` with the right inverse of :math:`G`:
+
+    .. math::
+
+        y = (x + b) G^{-1}
+
+    The existence of a right inverse is intuitive but is formally guaranteed by the fact that the
+    generator matrix of a linear code is full rank. It can thus be transformed to the standard form
+
+    .. math::
+
+        \tilde{G} = \left( I_{P} | -A \right) = V G S
+
+    through column permutations :math:`S` and row operations :math:`V`. The right inverse of
+    :math:`\tilde{G}` is trivially
+
+    .. math::
+
+        \tilde{G}^{-1} = \begin{pmatrix} I_{P} \\ 0 \end{pmatrix}.
+
+    Then we have
+
+    .. math::
+
+        x = y V^{-1} \tilde{G} S^{-1} + b \\
+        \therefore
+        y = (x + b) S \tilde{G}^{-1} V.
+
+    Explicit calculation of :math:`S` and :math:`V` is most easily done through a tracer matrix
+
+    .. math::
+
+        T = \begin{pmatrix} G & I_{P} \\
+                            m & 0 \end{pmatrix},
+
+    where :math:`m` is an index row vector. We apply the Gaussian elimination and column
+    permutation that transform :math:`G` to :math:`\tilde{G}`. The row operation unitary will be
+    recorded in the upper right block, and column permutations at the bottom row. After the
+    transformation,
+
+    .. math::
+
+        \tilde{T} = \begin{pmatrix} \tilde{G} & V \\
+                                    \pi(m) & 0 \end{pmatrix},
+
+    where :math:`\pi` defines the permutation encoded by :math:`S` through
+
+    .. math::
+
+        S_{ij} = \delta_{j \pi(i)}.
+
+    The :math:`j`th column of the permuted matrix has the value of the :math:`\pi^{-1}(j)`th
+    column of the original. To decode a link state :math:`x`, then, we gather
+    :math:`\pi^{-1}(m)`th elements of :math:`x + b` and multiply :math:`\tilde{G}^{-1} V`
+    from the right.
+
+    ============================
+    Error-correction perspective
+    ============================
+
+    For any generator :math:`G` we can define a parity check matrix :math:`H` as a matrix whose
+    right-multiplication kernel is spanned by the rows of :math:`G`:
+
+    .. math::
+    
+        G H = 0.
+
+    The parity check matrix is full rank but is not unique; any :math:`H' = HU` with (binary)
+    unitary :math:`U` satisfies the above equation. A particular choice of such :math:`H` is then
+    in the column echelon form, where the trailing entry of each column is 1, the trailing entry of
+    every column is to the right of the trailing entry of every column to its left, and each row
+    containing a trailing 1 has zeros in all its other entries. If we further perform row
+    permutations to such :math:`H`, we can transform it to the standard-form parity check matrix
+
+    .. math::
+
+        \tilde{H} = \begin{pmatrix} A \\ I_{V} \end{pmatrix}.
+
+    Let :math:`\tilde{H} = S^{-1} H U`. Then
+
+    .. math::
+
+        V G S S^{-1} H U = 0
+
+    for any :math:`V`. Because :math:`\tilde{G} \tilde{H} = 0`, there must be a :math:`V` such that
+    :math:`\tilde{G} = V G S^{-1}`.
+    """
     def __init__(self, primal: PureZ2LGT, base_link_state: Optional[np.ndarray] = None):
         self.primal = primal
         if base_link_state is None:
