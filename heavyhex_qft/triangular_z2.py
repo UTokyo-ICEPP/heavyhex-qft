@@ -1,6 +1,7 @@
 # pylint: disable=unused-argument, no-member
 """Triangular lattice for Z2 pure-gauge Hamiltonian."""
 from collections import defaultdict
+import copy
 from numbers import Number
 import re
 from itertools import permutations
@@ -67,6 +68,7 @@ class TriangularZ2Lattice(PureZ2LGT):
     ):
         if isinstance(configuration, rx.PyGraph):
             graph = configuration.copy()  # TODO copy() returns a shallow copy. Is this dangerous?
+            graph.attrs = copy.deepcopy(configuration.attrs)
         else:
             if isinstance(configuration, tuple):
                 row_even = ' '.join(['*'] * ((configuration[1] - 1) // 2 + 2))
