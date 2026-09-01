@@ -117,13 +117,17 @@ class TriangularZ2Lattice(PureZ2LGT):
     def _2q_gate_sequence(self) -> list[tuple[NDArray, NDArray, NDArray]]:
         """Return a sequence of (controls, targets, is_last_for_target) for parallel 2q operations.
         """
-        nump = self.num_plaquettes
+        nump = self.num_active_plaquettes
         controls = np.full((nump, 3), -1, dtype=int)
         targets = np.empty(nump, dtype=int)
         invalid_qubit = self.num_qubits
         link_qubits = self.link_qubits()
         plaquette_qubits = self.plaquette_qubits()
-        for itarg, plaq_id in enumerate(self.plaquette_ids):
+        itarg = -1
+        for plaq_id in self.plaquette_ids:
+            if not self.graph.attrs['plaquettes'][plaq_id].active:
+                continue
+            itarg += 1
             link_ids = self.plaquette_links(plaq_id)
             if (joint_link_id := self.graph.attrs['joint_link'][plaq_id]) is None:
                 # Standard plaquette - all link qubits connected to the plaquette qubit

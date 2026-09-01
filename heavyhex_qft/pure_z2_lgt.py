@@ -58,6 +58,10 @@ class PureZ2LGT(ABC):
         return sum(1 for p in self.graph.attrs['plaquettes'] if p is not None)
 
     @property
+    def num_active_plaquettes(self) -> int:
+        return sum(1 for p in self.graph.attrs['plaquettes'] if p is not None and p.active)
+
+    @property
     def num_links(self) -> int:
         return self.graph.num_edges()
 
@@ -72,6 +76,10 @@ class PureZ2LGT(ABC):
     @property
     def plaquette_ids(self) -> list[int]:
         return [p.id for p in filter(bool, self.graph.attrs['plaquettes'])]
+
+    @property
+    def active_plaquette_ids(self) -> list[int]:
+        return [p.id for p in filter(bool, self.graph.attrs['plaquettes']) if p.active]
 
     @property
     def link_ids(self) -> list[int]:
@@ -438,6 +446,9 @@ class PureZ2LGT(ABC):
         self._remove_plaquette(plaq_id)
         self._reset()
 
+    def activate_plaquette(self, plaq_id: int, active: bool = True):
+        self.graph.attrs['plaquettes'][plaq_id].active = active
+
     def layout_heavy_hex(
         self,
         coupling_map: Optional[CouplingMap] = None,
@@ -585,6 +596,8 @@ class PureZ2LGT(ABC):
         link_terms = [to_pauli_string({iq: 'Z'}, nq) for iq in range(nq)]
         plaquette_terms = []
         for plaq_id in self.plaquette_ids:
+            if not self.graph.attrs['plaquettes'][plaq_id].active:
+                continue
             lids = self.plaquette_links(plaq_id)
             plaquette_terms.append(to_pauli_string({iq: 'X' for iq in self._lid_to_bit[lids]}, nq))
 
@@ -750,9 +763,6 @@ class PureZ2LGT(ABC):
         # Mappings between element ids to clbits
         self._lid_to_bit = np.full(self.links_capacity, -1)
         self._lid_to_bit[self.link_ids] = np.arange(self.num_links)
-        # pid_to_bit is used in the dual lattice Hamiltonian construction
-        self._pid_to_bit = np.full(self.plaquettes_capacity, -1)
-        self._pid_to_bit[self.plaquette_ids] = np.arange(self.num_plaquettes)
 
         # (vertex, link) matrix
         self._vl_matrix = np.zeros((self.num_vertices, self.num_links), dtype=np.uint8)

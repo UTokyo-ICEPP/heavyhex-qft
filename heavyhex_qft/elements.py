@@ -68,6 +68,7 @@ class Plaquette(BaseElement):
     id: int
     position: tuple[float, float]
     vertices: set[int] = field(default_factory=set)
+    active: bool = True
 
     @property
     def label(self) -> str:
@@ -77,7 +78,8 @@ class Plaquette(BaseElement):
         return {
             'id': self.id,
             'position': list(self.position),
-            'vertices': list(self.vertices)
+            'vertices': list(self.vertices),
+            'active': self.active
         }
 
     @classmethod
@@ -85,7 +87,8 @@ class Plaquette(BaseElement):
         return cls(
             id=data['id'],
             position=tuple(data['position']),
-            vertices=set(data['vertices'])
+            vertices=set(data['vertices']),
+            active=data['active']
         )
 
 
