@@ -177,7 +177,7 @@ class PureZ2LGT(ABC):
                                         node_attrs=node_edge_attrs, edge_attrs=node_edge_attrs)
         layout = data.pop('layout')
         obj = cls(graph, **data)
-        obj.layout = layout
+        obj._layout = layout
         return obj
 
     def draw_graph(
