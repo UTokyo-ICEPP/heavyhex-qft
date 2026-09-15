@@ -387,13 +387,17 @@ def _make_primal_graph(config_rows: list[str]) -> tuple[rx.PyGraph, list[int]]:
                 joint_links.append(link_id)
 
     # Find the plaquettes through graph cycles of length 4
-    plaq_vlists = set()
+    plaquette_vertices = []
     for node in graph.node_indices():
-        for cycle in rx.all_simple_paths(graph, node, node, min_depth=4, cutoff=4):
-            if len(cycle) == 4:
-                plaq_vlists.add(tuple(sorted(cycle[:3])))
+        neighbors = set(graph.neighbors(node))
+        for neighbor in neighbors:
+            if neighbor <= node:
+                continue
+            for nn in neighbors & set(graph.neighbors(neighbor)):
+                if nn > neighbor:
+                    plaquette_vertices.append((node, neighbor, nn))
 
-    for plaq_id, plaq_vids in enumerate(sorted(plaq_vlists)):
+    for plaq_id, plaq_vids in enumerate(plaquette_vertices):
         vertices = [graph.attrs['vertices'][vid] for vid in plaq_vids]
         # Position the plaquette node at the center of the rectangle that bounds the triangle
         pos_x = float(np.mean([vertex.position[0] for vertex in vertices]))
