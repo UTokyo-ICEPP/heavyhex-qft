@@ -40,7 +40,7 @@ class RectangularZ2Lattice(PureZ2LGT):
             config_rows = _sanitize_rows(configuration)
 
         graph, dual_graph = _make_primal_and_dual_graphs(config_rows)
-        super().__init__(graph, dual_graph)
+        super().__init__(graph) #, dual_graph)
 
     def _connect_qubit_graph(self):
         # Add plaquette qubits
@@ -178,22 +178,24 @@ def _make_primal_and_dual_graphs(config_rows: list[str]) -> tuple[rx.PyGraph, rx
                 continue
             coord = (icol, nrows - 1 - irow)
             vertex = Vertex(next(vid_gen), coord)
-            coord_vids[coord] = vertex.vertex_id
+            coord_vids[coord] = vertex.id
             primal_graph.add_node(vertex)
             if (vid_up := coord_vids.get((coord[0], coord[1] + 1))) is not None:
-                link_id = primal_graph.add_edge(vid_up, vertex.vertex_id, None)
-                primal_graph.update_edge_by_index(link_id, Link(link_id))
+                link_id = primal_graph.add_edge(vid_up, vertex.id, None)
+                position = (float(coord[0]), coord[1] + 0.5)
+                primal_graph.update_edge_by_index(link_id, Link(link_id, position))
             if (vid_left := coord_vids.get((coord[0] - 1, coord[1]))) is not None:
-                link_id = primal_graph.add_edge(vid_left, vertex.vertex_id, None)
-                primal_graph.update_edge_by_index(link_id, Link(link_id))
+                link_id = primal_graph.add_edge(vid_left, vertex.id, None)
+                position = (coord[0] - 0.5, float(coord[1]))
+                primal_graph.update_edge_by_index(link_id, Link(link_id, position))
             if ((vid_upleft := coord_vids.get((coord[0] - 1, coord[1] + 1))) is not None
                     and vid_up is not None and vid_left is not None):
                 pcoord = (coord[0] - 0.5, coord[1] + 0.5)
-                vertices = {vid_upleft, vid_up, vid_left, vertex.vertex_id}
+                vertices = {vid_upleft, vid_up, vid_left, vertex.id}
                 plaquette = Plaquette(next(pid_gen), pcoord, vertices=vertices)
                 dual_graph.add_node(plaquette)
                 for vid in vertices:
-                    primal_graph[vid].plaquettes.add(plaquette.plaq_id)
+                    primal_graph[vid].plaquettes.add(plaquette.id)
 
     # Iterate through the links in the primal graph in the original order so that edge indices
     # in the dual graph coincides with the link ids
