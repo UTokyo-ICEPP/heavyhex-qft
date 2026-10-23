@@ -102,7 +102,9 @@ class PureZ2LGT(ABC):
         return len(self.graph.attrs['vertices'])
 
     @property
-    def layout(self) -> list[int]:
+    def layout(self) -> list[int] | None:
+        if self._layout is None:
+            return None
         return list(self._layout)
 
     def plaquette_id_to_idx(self, plaq_id: int) -> int:
